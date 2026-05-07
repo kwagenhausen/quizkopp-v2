@@ -159,16 +159,16 @@ export default function App() {
   );
 }
 
-// --- STARTSEITE MIT DEINEM LOGO ---
+// --- STARTSEITE MIT DEINEM NEUEN LOGO ---
 function LoginView({ onJoin, onAdmin }) {
   const [c, setC] = useState(''); const [n, setN] = useState('');
   return (
     <div className="max-w-md mx-auto pt-10 text-center">
-      {/* DEIN LOGO */}
+      {/* DEIN AKTUALISIERTES LOGO */}
       <img 
-        src="https://lh3.googleusercontent.com/d/1UPTifIDsL9ucIk9lu3WnGhGxaHxcFZGM" 
+        src="https://drive.google.com/uc?export=view&id=1xT-mocFlux7kwrVvKxQvA25Z0UkPk1Ep" 
         alt="QuizKopp Logo" 
-        className="w-56 h-auto mx-auto mb-10 drop-shadow-[0_0_20px_rgba(99,102,241,0.3)] transition-transform hover:scale-105"
+        className="w-64 h-auto mx-auto mb-10 drop-shadow-[0_0_25px_rgba(99,102,241,0.4)] transition-transform hover:scale-105"
       />
       
       <div className="bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-xl space-y-4">
@@ -322,7 +322,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             </div>
           ))}</div>}
         </div>
-        {(q.type !== 'buzzer' || room.status === 'revealed') && <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-indigo-600' : 'bg-emerald-600'}`}>{room.status === 'active' ? 'Auflösen' : 'Nächste Frage'}</button>}
+        {(q.type !== 'buzzer' || room.status === 'revealed') && <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-indigo-600' : 'bg-emerald-600'}`}>{room.status === 'active' ? 'Lösung auflösen' : 'Nächste Frage'}</button>}
       </div>
       <div className="bg-slate-800 p-8 rounded-3xl border border-slate-700 h-fit sticky top-24 shadow-2xl">
         <h3 className="text-2xl font-bold mb-8 uppercase tracking-widest text-slate-400">Ranking</h3>
