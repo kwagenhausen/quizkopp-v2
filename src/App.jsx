@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell } from 'lucide-react';
+import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs } from 'firebase/firestore';
 
 // --- KONFIGURATION ---
-const ADMIN_PASSWORD = "test"; // DEIN PASSWORT
+const ADMIN_PASSWORD = "quiz"; // DEIN PASSWORT
 
 const firebaseConfig = {
   apiKey: "AIzaSyDS7Dq6toxf3v3ymtMhHkzfxRLA5xgv-g0",
@@ -119,13 +119,15 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 font-sans">
       <header className="bg-slate-800 border-b border-slate-700 p-4 sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto flex justify-between items-center">
+        {/* Header breitet sich im Host-Modus ebenfalls weiter aus */}
+        <div className={role === 'host' ? "w-full max-w-[1920px] mx-auto px-4 flex justify-between items-center" : "max-w-4xl mx-auto flex justify-between items-center"}>
           <div className="flex items-center gap-2"><Trophy className="text-yellow-400"/><h1 className="text-xl font-bold">QuizKopp Pro</h1></div>
           {role && <button onClick={() => { if(role==='host') deleteDoc(doc(db,'rooms',currentRoomCode)); setRole(null); setCurrentRoomCode(''); }} className="text-slate-400 hover:text-red-400 transition-colors"><LogOut size={20}/></button>}
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto p-4 py-8">
+      {/* Dynamische Breite: Volle Beamer-Größe für den Host, ansonsten kompakte Ansicht für Setup/Handy */}
+      <main className={role === 'host' ? "w-full max-w-[1920px] mx-auto p-4 lg:p-8" : "max-w-4xl mx-auto p-4 py-8"}>
         {!role && !adminAuth && <LoginView onJoin={async (c, n) => {
             if(!allRooms.find(r=>r.id===c.toUpperCase())) return alert("Raum nicht gefunden!");
             await setDoc(doc(db,'players',user.uid),{name:n,roomCode:c.toUpperCase(),score:0,currentAnswer:null,answers:{}});
@@ -195,17 +197,44 @@ function AdminPanel({ onNew, onLib, onLogout }) {
   );
 }
 
+// --- ÜBERARBEITETE BIBLIOTHEK (UMBENENNEN & LÖSCHEN) ---
 function Library({ onSelect, onBack, db }) {
   const [t, setT] = useState([]);
-  useEffect(() => { getDocs(collection(db,'quiz_templates')).then(s=>setT(s.docs.map(d=>({id:d.id,...d.data()})))); }, []);
+  
+  useEffect(() => { 
+    getDocs(collection(db,'quiz_templates')).then(s=>setT(s.docs.map(d=>({id:d.id,...d.data()})))); 
+  }, []);
+
+  const deleteQuiz = async (id) => {
+    if(window.confirm("Bist du sicher? Dieses Quiz wird dauerhaft gelöscht.")) {
+      await deleteDoc(doc(db, 'quiz_templates', id));
+      setT(t.filter(quiz => quiz.id !== id));
+    }
+  };
+
+  const renameQuiz = async (id, oldTitle) => {
+    const newTitle = window.prompt("Neuer Name für das Quiz:", oldTitle);
+    if(newTitle && newTitle.trim() !== "" && newTitle !== oldTitle) {
+      await updateDoc(doc(db, 'quiz_templates', id), { title: newTitle });
+      setT(t.map(quiz => quiz.id === id ? { ...quiz, title: newTitle } : quiz));
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center"><h2 className="text-2xl font-bold">Deine Quizzes</h2><button onClick={onBack} className="text-slate-400">Zurück</button></div>
       {t.length === 0 && <p className="text-center py-10 text-slate-500 italic">Noch keine Quizzes gespeichert.</p>}
       {t.map(x => (
-        <div key={x.id} className="bg-slate-800 p-6 rounded-2xl flex justify-between items-center border border-slate-700">
-          <div><p className="font-bold">{x.title}</p><p className="text-xs text-slate-500">{x.questions.length} Fragen</p></div>
-          <button onClick={() => onSelect(x.questions)} className="bg-emerald-600 px-4 py-2 rounded-lg font-bold">Laden</button>
+        <div key={x.id} className="bg-slate-800 p-6 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border border-slate-700">
+          <div>
+            <p className="font-bold text-xl">{x.title}</p>
+            <p className="text-sm text-slate-500">{x.questions?.length || 0} Fragen</p>
+          </div>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button onClick={() => renameQuiz(x.id, x.title)} className="p-3 text-slate-400 hover:text-indigo-400 transition-colors bg-slate-900 rounded-lg"><Edit3 size={20}/></button>
+            <button onClick={() => deleteQuiz(x.id)} className="p-3 text-slate-400 hover:text-red-400 transition-colors bg-slate-900 rounded-lg"><Trash2 size={20}/></button>
+            <button onClick={() => onSelect(x.questions)} className="bg-emerald-600 px-6 py-3 rounded-xl font-bold ml-auto sm:ml-2 shadow-lg w-full sm:w-auto">Laden</button>
+          </div>
         </div>
       ))}
     </div>
@@ -257,52 +286,96 @@ function HostSetup({ onCreate, onBack, db }) {
   );
 }
 
+// --- ÜBERARBEITETES HOST DASHBOARD (BEAMER-MODUS) ---
 function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCorrect }) {
   const q = room.questions[room.currentQuestionIndex];
-  if (room.status === 'lobby') return <div className="text-center py-10 space-y-10"><h2 className="text-7xl font-mono font-bold text-indigo-400 tracking-widest">{room.id}</h2><div className="bg-slate-800 p-8 rounded-2xl border border-slate-700 max-w-lg mx-auto"><h3 className="mb-6 font-bold flex items-center justify-center gap-2 text-xl"><Users/> Teams ({players.length})</h3><div className="flex flex-wrap gap-2 justify-center">{players.map(p=><span key={p.id} className="bg-slate-700 px-4 py-1.5 rounded-full font-semibold">{p.name}</span>)}</div></div><button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-600 px-16 py-5 rounded-full text-2xl font-bold disabled:opacity-50 shadow-xl">Quiz starten!</button></div>;
-  if (room.status === 'finished') return <div className="space-y-4 max-w-xl mx-auto"><h2 className="text-center text-4xl text-yellow-400 font-bold mb-8">🏆 Endstand</h2>{players.map((p,i)=><div key={p.id} className={`p-5 rounded-2xl flex justify-between items-center border ${i===0?'bg-yellow-500/10 border-yellow-500':'bg-slate-800 border-slate-700'}`}><span>{i+1}. {p.name}</span><span className="font-mono text-2xl bg-slate-900 px-4 py-1 rounded-lg">{p.score}</span></div>)}<button onClick={()=>downloadCSV(players,room)} className="w-full bg-slate-800 border border-slate-700 py-4 rounded-2xl flex items-center justify-center gap-2 font-bold mt-8"><Download/> Excel-Export (CSV)</button></div>;
+  
+  if (room.status === 'lobby') return (
+    <div className="text-center py-20 space-y-12">
+      <p className="text-3xl text-slate-400 uppercase tracking-widest font-bold">Raum-Code</p>
+      <h2 className="text-[10rem] leading-none font-mono font-bold text-indigo-400">{room.id}</h2>
+      <div className="bg-slate-800 p-8 rounded-3xl border border-slate-700 max-w-4xl mx-auto shadow-2xl">
+        <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl"><Users size={36}/> Teams ({players.length})</h3>
+        <div className="flex flex-wrap gap-4 justify-center">
+          {players.map(p=><span key={p.id} className="bg-slate-700 px-6 py-3 rounded-full text-xl font-semibold shadow-inner">{p.name}</span>)}
+        </div>
+      </div>
+      <button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-600 hover:bg-emerald-500 px-24 py-8 rounded-full text-4xl font-bold disabled:opacity-50 shadow-[0_0_40px_rgba(16,185,129,0.3)] transition-all mt-10">Quiz starten!</button>
+    </div>
+  );
+
+  if (room.status === 'finished') return (
+    <div className="space-y-8 max-w-4xl mx-auto py-10">
+      <h2 className="text-center text-6xl text-yellow-400 font-bold mb-12">🏆 Endstand</h2>
+      {players.map((p,i)=>(
+        <div key={p.id} className={`p-8 rounded-3xl flex justify-between items-center border ${i===0?'bg-yellow-500/10 border-yellow-500 shadow-[0_0_30px_rgba(234,179,8,0.2)]':'bg-slate-800 border-slate-700'}`}>
+          <span className="text-3xl font-bold">{i+1}. {p.name}</span>
+          <span className="font-mono text-4xl bg-slate-900 px-6 py-2 rounded-xl">{p.score}</span>
+        </div>
+      ))}
+      <button onClick={()=>downloadCSV(players,room)} className="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 py-6 rounded-3xl flex items-center justify-center gap-4 text-2xl font-bold mt-12 transition-colors"><Download size={32}/> Excel-Export (CSV)</button>
+    </div>
+  );
 
   return (
-    <div className="grid md:grid-cols-3 gap-8">
-      <div className="md:col-span-2 space-y-6">
-        <div className="bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-xl relative min-h-[300px]">
-          <div className="flex justify-between items-center mb-6">
-             <span className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Frage {room.currentQuestionIndex+1}/{room.questions.length}</span>
-             {q.type !== 'buzzer' && <div className="flex items-center gap-2 text-yellow-400 font-mono text-2xl"><Clock/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</div>}
-             {q.type === 'buzzer' && <div className="flex items-center gap-2 text-red-500 font-bold uppercase"><Bell/> Buzzer aktiv</div>}
+    // Ein Grid, das dem Beamer-Modus gerecht wird (Frage 3/4 Platz, Ranking 1/4 Platz)
+    <div className="grid lg:grid-cols-4 gap-8 h-full">
+      <div className="lg:col-span-3 space-y-6 flex flex-col h-full">
+        <div className="bg-slate-800 p-8 md:p-12 rounded-3xl border border-slate-700 shadow-2xl relative flex-grow flex flex-col">
+          <div className="flex justify-between items-center mb-8">
+             <span className="text-lg font-bold text-indigo-400 uppercase tracking-widest bg-indigo-500/10 px-4 py-2 rounded-full border border-indigo-500/20">Frage {room.currentQuestionIndex+1} von {room.questions.length}</span>
+             {q.type !== 'buzzer' && <div className="flex items-center gap-3 text-yellow-400 font-mono text-4xl font-bold bg-slate-900 px-6 py-2 rounded-full border border-slate-700 shadow-inner"><Clock size={32}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</div>}
+             {q.type === 'buzzer' && <div className="flex items-center gap-3 text-red-500 font-bold uppercase text-2xl bg-red-500/10 px-6 py-2 rounded-full border border-red-500/20 animate-pulse"><Bell size={28}/> Buzzer aktiv</div>}
           </div>
-          {q.imgUrl && <img src={q.imgUrl} className="w-full h-64 object-contain rounded-xl mb-6 bg-slate-900 p-2"/>}
-          <h2 className="text-3xl font-bold mb-8">{q.q}</h2>
+          
+          {/* Das Bild nimmt sich dank vh-Angaben dynamisch genau den Platz, den es braucht */}
+          {q.imgUrl && <img src={q.imgUrl} className="w-full max-h-[45vh] object-contain rounded-2xl mb-8 bg-slate-900/50 p-4 border border-slate-700"/>}
+          
+          <h2 className="text-4xl md:text-5xl lg:text-6xl font-bold mb-10 leading-tight">{q.q}</h2>
 
           {q.type === 'buzzer' && room.status === 'active' && room.buzzerWinner && (
-            <div className="bg-red-500/20 border-2 border-red-500 p-8 rounded-2xl text-center shadow-[0_0_30px_rgba(239,68,68,0.2)] animate-pulse">
-              <p className="text-red-400 font-bold mb-2 uppercase tracking-widest">Am schnellsten war:</p>
-              <h3 className="text-4xl font-bold text-white mb-8">{room.buzzerWinnerName}</h3>
-              <div className="flex gap-4 justify-center">
-                <button onClick={()=>onBuzzerCorrect(false)} className="bg-slate-800 border border-slate-700 hover:bg-red-600 px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-colors"><XCircle/> Falsch (Sperren)</button>
-                <button onClick={()=>onBuzzerCorrect(true)} className="bg-emerald-600 hover:bg-emerald-500 px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-colors"><CheckCircle/> Richtig (+1 Punkt)</button>
+            <div className="bg-red-500/20 border-2 border-red-500 p-12 rounded-3xl text-center shadow-[0_0_50px_rgba(239,68,68,0.3)] animate-pulse mt-auto">
+              <p className="text-red-400 font-bold text-xl mb-4 uppercase tracking-widest">Schnellster Buzzer:</p>
+              <h3 className="text-6xl md:text-7xl font-black text-white mb-12 drop-shadow-lg">{room.buzzerWinnerName}</h3>
+              <div className="flex gap-6 justify-center">
+                <button onClick={()=>onBuzzerCorrect(false)} className="bg-slate-800 border border-slate-700 hover:bg-red-600 px-8 py-5 rounded-2xl font-bold text-xl flex items-center gap-3 transition-colors"><XCircle size={28}/> Falsch (Sperren)</button>
+                <button onClick={()=>onBuzzerCorrect(true)} className="bg-emerald-600 hover:bg-emerald-500 px-8 py-5 rounded-2xl font-bold text-xl flex items-center gap-3 transition-colors shadow-lg"><CheckCircle size={28}/> Richtig (+1 Pkt)</button>
               </div>
             </div>
           )}
 
-          {room.status === 'revealed' && q.type !== 'buzzer' && <div className="bg-emerald-500/10 border border-emerald-500/50 p-4 rounded-xl mb-6">Lösung: <span className="font-bold">{q.type==='multiple'?q.options[q.correctIndex]:q.type==='estimation'?q.correctValue:'Manueller Check unten'}</span></div>}
-          {room.status === 'revealed' && q.type === 'buzzer' && <div className="bg-emerald-500/10 border border-emerald-500/50 p-6 rounded-xl text-center"><h3 className="text-2xl font-bold text-emerald-500 mb-2">Punkt vergeben!</h3><p>Team {room.buzzerWinnerName} hat richtig geantwortet.</p></div>}
+          {room.status === 'revealed' && q.type !== 'buzzer' && <div className="bg-emerald-500/10 border border-emerald-500/50 p-8 rounded-2xl mb-6 mt-auto"><p className="text-emerald-500 font-bold uppercase tracking-widest mb-2">Korrekte Lösung</p><p className="text-4xl font-bold">{q.type==='multiple'?q.options[q.correctIndex]:q.type==='estimation'?q.correctValue:'Manuelle Auswertung'}</p></div>}
+          {room.status === 'revealed' && q.type === 'buzzer' && <div className="bg-emerald-500/10 border border-emerald-500/50 p-8 rounded-2xl text-center mt-auto"><h3 className="text-4xl font-bold text-emerald-500 mb-4">Punkt vergeben!</h3><p className="text-2xl">Team {room.buzzerWinnerName} war siegreich.</p></div>}
           
-          {room.status === 'revealed' && q.type === 'text' && <div className="space-y-2">{players.map(p=>(
-            <div key={p.id} className="flex justify-between items-center bg-slate-900 p-4 rounded-xl border border-slate-700">
-              <div className="pr-2"><span className="text-xs text-slate-500 uppercase">{p.name}</span><p className="italic">"{p.currentAnswer||'---'}"</p></div>
-              <div className="flex gap-2"><button onClick={()=>onCorrect(p.id,false)} className={`p-2 rounded ${p.corrected&&!p.wasCorrect?'bg-red-600':'bg-slate-800'}`}><XCircle/></button><button onClick={()=>onCorrect(p.id,true)} className={`p-2 rounded ${p.corrected&&p.wasCorrect?'bg-emerald-600':'bg-slate-800'}`}><CheckCircle/></button></div>
+          {room.status === 'revealed' && q.type === 'text' && <div className="space-y-4 mt-auto">{players.map(p=>(
+            <div key={p.id} className="flex justify-between items-center bg-slate-900 p-6 rounded-2xl border border-slate-700">
+              <div className="pr-4"><span className="text-sm font-bold text-slate-500 uppercase tracking-widest">{p.name}</span><p className="text-2xl italic mt-1">"{p.currentAnswer||'---'}"</p></div>
+              <div className="flex gap-3"><button onClick={()=>onCorrect(p.id,false)} className={`p-4 rounded-xl ${p.corrected&&!p.wasCorrect?'bg-red-600':'bg-slate-800'}`}><XCircle size={32}/></button><button onClick={()=>onCorrect(p.id,true)} className={`p-4 rounded-xl ${p.corrected&&p.wasCorrect?'bg-emerald-600':'bg-slate-800'}`}><CheckCircle size={32}/></button></div>
             </div>
           ))}</div>}
         </div>
         
         {q.type !== 'buzzer' || room.status === 'revealed' ? (
-          <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-5 rounded-2xl font-bold text-xl shadow-lg ${room.status === 'active' ? 'bg-indigo-600' : 'bg-emerald-600'}`}>{room.status === 'active' ? 'Lösung auflösen' : 'Nächste Frage'}</button>
+          <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-[0_0_30px_rgba(0,0,0,0.5)] transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-indigo-600' : 'bg-emerald-600'}`}>{room.status === 'active' ? 'Lösung auflösen' : 'Nächste Frage'}</button>
         ) : null}
       </div>
-      <div className="bg-slate-800 p-6 rounded-3xl border border-slate-700 h-fit">
-        <h3 className="font-bold mb-4">Live-Ranking</h3>
-        {players.map(p=><div key={p.id} className="flex justify-between text-sm py-2 border-b border-slate-700/50"><span>{p.name}</span><div className="flex gap-2"> {(p.currentAnswer || p.id === room.buzzerWinner)?<CheckCircle size={14} className="text-emerald-500"/>:<div className="w-2 h-2 rounded-full bg-slate-700 animate-pulse mt-1.5"/>} <span className="font-mono bg-slate-900 px-2 rounded border border-slate-700 text-indigo-300">{p.score}</span></div></div>)}
+      
+      {/* Das Ranking an der Seite */}
+      <div className="bg-slate-800 p-8 rounded-3xl border border-slate-700 h-fit sticky top-24 shadow-2xl">
+        <h3 className="text-2xl font-bold mb-8 uppercase tracking-widest text-slate-400">Live-Ranking</h3>
+        <div className="space-y-4">
+          {players.map((p, index)=>(
+            <div key={p.id} className="flex justify-between text-lg items-center bg-slate-900/50 p-4 rounded-xl border border-slate-700/50">
+              <span className="font-bold flex items-center gap-3">
+                <span className="text-slate-500 text-sm">{index + 1}.</span> {p.name}
+              </span>
+              <div className="flex items-center gap-4">
+                {(p.currentAnswer || p.id === room.buzzerWinner) ? <CheckCircle size={20} className="text-emerald-500"/> : <div className="w-3 h-3 rounded-full bg-slate-700 animate-pulse mt-1"/>} 
+                <span className="font-mono font-bold bg-slate-900 px-3 py-1 rounded-lg border border-slate-600 text-indigo-300">{p.score}</span>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -317,7 +390,6 @@ function PlayerDashboard({ room, player, onAnswer, onBuzz }) {
   if (room.status === 'lobby') return <div className="text-center py-20 bg-slate-800 rounded-3xl border border-slate-700 shadow-xl max-w-sm mx-auto"><h2 className="text-2xl font-bold">Team {player.name}</h2><p className="mt-8 animate-pulse text-indigo-400">Warte auf Start...</p></div>;
   if (room.status === 'finished') return <div className="text-center py-20 bg-slate-800 rounded-3xl border border-slate-700 shadow-xl max-w-sm mx-auto"><Trophy size={64} className="mx-auto text-yellow-400 mb-6"/><div className="text-6xl font-bold">{player.score}</div></div>;
 
-  // BUZZER ANSICHT
   if (q.type === 'buzzer') {
     return (
       <div className="max-w-md mx-auto space-y-6 text-center">
@@ -348,7 +420,6 @@ function PlayerDashboard({ room, player, onAnswer, onBuzz }) {
     );
   }
 
-  // NORMALE ANSICHT
   return (
     <div className="max-w-md mx-auto space-y-6">
       <div className="flex justify-between text-xs font-bold text-slate-500 uppercase tracking-widest">
