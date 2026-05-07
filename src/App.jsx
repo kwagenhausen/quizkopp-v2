@@ -5,7 +5,7 @@ import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs } from 'firebase/firestore';
 
 // --- KONFIGURATION ---
-const ADMIN_PASSWORD = "quiz"; // DEIN PASSWORT
+const ADMIN_PASSWORD = "test"; // DEIN PASSWORT
 
 const firebaseConfig = {
   apiKey: "AIzaSyDS7Dq6toxf3v3ymtMhHkzfxRLA5xgv-g0",
