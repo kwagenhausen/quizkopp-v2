@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Download, Trash2, Lock, Image as ImageIcon, Clock } from 'lucide-react';
+import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs } from 'firebase/firestore';
 
 // --- KONFIGURATION ---
-const ADMIN_PASSWORD = "test"; // DEIN PASSWORT
+const ADMIN_PASSWORD = "quiz"; // DEIN PASSWORT
 
 const firebaseConfig = {
   apiKey: "AIzaSyDS7Dq6toxf3v3ymtMhHkzfxRLA5xgv-g0",
@@ -36,7 +36,8 @@ const downloadCSV = (players, room) => {
     const row = [i + 1, p.name, p.score];
     room.questions.forEach((q, qi) => {
       const a = p.answers?.[qi];
-      if (q.type === 'multiple' && a !== undefined) row.push(q.options[a]?.replace(/,/g, "") || "---");
+      if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
+      else if (q.type === 'buzzer') row.push(a ? "Gebuzzert & Richtig" : "---");
       else row.push(a?.toString().replace(/,/g, "") || "---");
     });
     return row;
@@ -66,18 +67,18 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    onSnapshot(collection(db, 'rooms'), s => setAllRooms(s.docs.map(d => ({id: d.id, ...d.data()}))));
-    onSnapshot(collection(db, 'players'), s => setAllPlayers(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubR = onSnapshot(collection(db, 'rooms'), s => setAllRooms(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubP = onSnapshot(collection(db, 'players'), s => setAllPlayers(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    return () => { unsubR(); unsubP(); };
   }, [user]);
 
   const activeRoom = allRooms.find(r => r.id === currentRoomCode);
   const players = allPlayers.filter(p => p.roomCode === currentRoomCode).sort((a,b) => b.score - a.score);
   const myProfile = allPlayers.find(p => p.id === user?.uid);
 
-  // Timer Logik (Host-Seite)
   useEffect(() => {
     let interval;
-    if (role === 'host' && activeRoom?.status === 'active' && activeRoom?.timeLeft > 0) {
+    if (role === 'host' && activeRoom?.status === 'active' && activeRoom?.timeLeft > 0 && !activeRoom?.buzzerWinner) {
       interval = setInterval(async () => {
         const newTime = activeRoom.timeLeft - 1;
         await updateDoc(doc(db, 'rooms', currentRoomCode), { timeLeft: newTime });
@@ -85,13 +86,13 @@ export default function App() {
       }, 1000);
     }
     return () => clearInterval(interval);
-  }, [role, activeRoom?.status, activeRoom?.timeLeft]);
+  }, [role, activeRoom?.status, activeRoom?.timeLeft, activeRoom?.buzzerWinner]);
 
   const createRoom = async (questions) => {
     const code = generateRoomCode();
     await setDoc(doc(db, 'rooms', code), {
       hostId: user.uid, status: 'lobby', currentQuestionIndex: 0, questions,
-      timeLeft: questions[0].timer || 0, createdAt: Date.now()
+      timeLeft: questions[0].timer || 0, buzzerWinner: null, buzzerLockedOut: [], createdAt: Date.now()
     });
     setCurrentRoomCode(code); setRole('host');
   };
@@ -99,6 +100,18 @@ export default function App() {
   const manualCorrect = async (pId, ok) => {
     const p = players.find(x => x.id === pId);
     await updateDoc(doc(db, 'players', pId), { score: ok ? p.score + 1 : p.score, corrected: true, wasCorrect: ok });
+  };
+
+  const handleBuzzerHost = async (isCorrect) => {
+    const pId = activeRoom.buzzerWinner;
+    if (isCorrect) {
+      const p = players.find(x => x.id === pId);
+      await updateDoc(doc(db, 'players', pId), { score: p.score + 1, [`answers.${activeRoom.currentQuestionIndex}`]: true });
+      await updateDoc(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
+    } else {
+      const locked = activeRoom.buzzerLockedOut || [];
+      await updateDoc(doc(db, 'rooms', currentRoomCode), { buzzerWinner: null, buzzerLockedOut: [...locked, pId] });
+    }
   };
 
   if (loading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">Lade QuizKopp Pro...</div>;
@@ -120,9 +133,7 @@ export default function App() {
         }} onAdmin={() => setAdminAuth('login')}/>}
 
         {adminAuth === 'login' && <AdminLogin onOk={pw => pw === ADMIN_PASSWORD ? setAdminAuth(true) : alert("Falsch!")} onBack={() => setAdminAuth(false)}/>}
-        
         {adminAuth === true && !role && <AdminPanel onNew={() => setRole('setup')} onLib={() => setRole('lib')} onLogout={() => setAdminAuth(false)}/>}
-
         {role === 'setup' && <HostSetup onCreate={createRoom} onBack={() => setRole(null)} db={db}/>}
         {role === 'lib' && <Library onSelect={q => createRoom(q)} onBack={() => setRole(null)} db={db}/>}
 
@@ -130,11 +141,15 @@ export default function App() {
             const last = activeRoom.currentQuestionIndex >= activeRoom.questions.length -1;
             const nextIdx = activeRoom.currentQuestionIndex + 1;
             for(const p of players) await updateDoc(doc(db,'players',p.id),{currentAnswer:null,corrected:false});
-            await updateDoc(doc(db,'rooms',currentRoomCode),{status:last?'finished':'active',currentQuestionIndex:last?activeRoom.currentQuestionIndex:nextIdx,timeLeft:activeRoom.questions[nextIdx]?.timer || 0});
-        }} onCorrect={manualCorrect}/>}
+            await updateDoc(doc(db,'rooms',currentRoomCode),{status:last?'finished':'active',currentQuestionIndex:last?activeRoom.currentQuestionIndex:nextIdx,timeLeft:activeRoom.questions[nextIdx]?.timer || 0, buzzerWinner: null, buzzerLockedOut: []});
+        }} onCorrect={manualCorrect} onBuzzerCorrect={handleBuzzerHost}/>}
 
         {role === 'player' && activeRoom && <PlayerDashboard room={activeRoom} player={myProfile} onAnswer={async v => {
             await updateDoc(doc(db,'players',user.uid),{currentAnswer:v,[`answers.${activeRoom.currentQuestionIndex}`]:v});
+        }} onBuzz={async () => {
+            if(!activeRoom.buzzerWinner && !(activeRoom.buzzerLockedOut || []).includes(user.uid)) {
+              await updateDoc(doc(db,'rooms',currentRoomCode),{buzzerWinner: user.uid, buzzerWinnerName: myProfile.name});
+            }
         }}/>}
       </main>
     </div>
@@ -152,7 +167,7 @@ function LoginView({ onJoin, onAdmin }) {
       <div className="bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-xl space-y-4">
         <input placeholder="RAUM-CODE" className="w-full bg-slate-900 p-4 rounded-xl text-center text-2xl font-mono border border-slate-700 outline-none focus:border-indigo-500" value={c} onChange={e=>setC(e.target.value.toUpperCase())} maxLength={4}/>
         <input placeholder="TEAMNAME" className="w-full bg-slate-900 p-4 rounded-xl border border-slate-700 outline-none" value={n} onChange={e=>setN(e.target.value)}/>
-        <button onClick={() => onJoin(c, n)} className="w-full bg-indigo-600 py-4 rounded-xl font-bold text-lg hover:bg-indigo-500 transition-colors">Beitreten</button>
+        <button onClick={() => onJoin(c, n)} disabled={!c || !n} className="w-full bg-indigo-600 disabled:opacity-50 py-4 rounded-xl font-bold text-lg hover:bg-indigo-500 transition-colors">Beitreten</button>
       </div>
       <button onClick={onAdmin} className="mt-20 text-slate-700 hover:text-slate-500 text-xs">Admin-Zentrale</button>
     </div>
@@ -164,8 +179,8 @@ function AdminLogin({ onOk, onBack }) {
   return (
     <div className="max-w-sm mx-auto bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl mt-10">
       <h2 className="text-center font-bold mb-6">Admin Zugang</h2>
-      <input type="password" placeholder="Passwort" className="w-full bg-slate-900 p-3 rounded mb-4 border border-slate-700" value={pw} onChange={e=>setPw(e.target.value)} onKeyPress={e=>e.key==='Enter'&&onOk(pw)}/>
-      <div className="flex gap-2"><button onClick={onBack} className="flex-1 bg-slate-700 py-2 rounded">Zurück</button><button onClick={()=>onOk(pw)} className="flex-1 bg-indigo-600 py-2 rounded">Login</button></div>
+      <input type="password" placeholder="Passwort" className="w-full bg-slate-900 p-3 rounded mb-4 border border-slate-700 outline-none" value={pw} onChange={e=>setPw(e.target.value)} onKeyPress={e=>e.key==='Enter'&&onOk(pw)} autoFocus/>
+      <div className="flex gap-2"><button onClick={onBack} className="flex-1 bg-slate-700 py-2 rounded">Zurück</button><button onClick={()=>onOk(pw)} className="flex-1 bg-indigo-600 py-2 rounded font-bold">Login</button></div>
     </div>
   );
 }
@@ -173,12 +188,8 @@ function AdminLogin({ onOk, onBack }) {
 function AdminPanel({ onNew, onLib, onLogout }) {
   return (
     <div className="grid md:grid-cols-2 gap-6 pt-10">
-      <button onClick={onNew} className="bg-emerald-600 p-10 rounded-3xl flex flex-col items-center gap-4 hover:scale-105 transition-transform">
-        <Plus size={48}/><span className="text-xl font-bold">Neues Quiz</span>
-      </button>
-      <button onClick={onLib} className="bg-indigo-600 p-10 rounded-3xl flex flex-col items-center gap-4 hover:scale-105 transition-transform">
-        <FolderOpen size={48}/><span className="text-xl font-bold">Bibliothek</span>
-      </button>
+      <button onClick={onNew} className="bg-emerald-600 p-10 rounded-3xl flex flex-col items-center gap-4 hover:scale-105 transition-transform"><Plus size={48}/><span className="text-xl font-bold">Neues Quiz</span></button>
+      <button onClick={onLib} className="bg-indigo-600 p-10 rounded-3xl flex flex-col items-center gap-4 hover:scale-105 transition-transform"><FolderOpen size={48}/><span className="text-xl font-bold">Bibliothek</span></button>
       <button onClick={onLogout} className="md:col-span-2 text-slate-500 underline mt-10">Abmelden</button>
     </div>
   );
@@ -190,6 +201,7 @@ function Library({ onSelect, onBack, db }) {
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center"><h2 className="text-2xl font-bold">Deine Quizzes</h2><button onClick={onBack} className="text-slate-400">Zurück</button></div>
+      {t.length === 0 && <p className="text-center py-10 text-slate-500 italic">Noch keine Quizzes gespeichert.</p>}
       {t.map(x => (
         <div key={x.id} className="bg-slate-800 p-6 rounded-2xl flex justify-between items-center border border-slate-700">
           <div><p className="font-bold">{x.title}</p><p className="text-xs text-slate-500">{x.questions.length} Fragen</p></div>
@@ -202,62 +214,80 @@ function Library({ onSelect, onBack, db }) {
 
 function HostSetup({ onCreate, onBack, db }) {
   const [title, setTitle] = useState('');
-  const [qs, setQs] = useState([{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:30,imgUrl:'',showImg:true}]);
+  const [qs, setQs] = useState([{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true}]);
   const update = (i,f,v) => { const n=[...qs]; n[i][f]=v; setQs(n); };
   return (
     <div className="space-y-6">
       <div className="flex gap-4 items-center">
         <input placeholder="Quiz-Name" className="bg-transparent text-2xl font-bold border-b border-slate-700 w-full outline-none" value={title} onChange={e=>setTitle(e.target.value)}/>
-        <button onClick={async() => {await setDoc(doc(collection(db,'quiz_templates')),{title,questions:qs,createdAt:Date.now()}); alert("Gespeichert!");}} className="bg-slate-800 p-2 rounded border border-slate-700"><Save size={20}/></button>
+        <button onClick={async() => {if(!title)return alert("Titel fehlt!"); await setDoc(doc(collection(db,'quiz_templates')),{title,questions:qs,createdAt:Date.now()}); alert("Gespeichert!");}} className="bg-slate-800 p-2 rounded border border-slate-700"><Save size={20}/></button>
       </div>
       {qs.map((q,i) => (
         <div key={i} className="bg-slate-800 p-6 rounded-3xl border border-slate-700 space-y-4">
           <div className="flex gap-4">
             <input placeholder="Frage..." className="flex-1 bg-slate-900 p-2 rounded border border-slate-700" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
             <select className="bg-slate-900 p-2 rounded border border-slate-700" value={q.type} onChange={e=>update(i,'type',e.target.value)}>
-              <option value="multiple">Multiple Choice</option><option value="text">Freitext</option><option value="estimation">Schätzung</option>
+              <option value="multiple">Multiple Choice</option><option value="text">Freitext</option><option value="estimation">Schätzung</option><option value="buzzer">Buzzer-Frage</option>
             </select>
           </div>
-          <div className="flex gap-4">
-            <input placeholder="Bild-URL (optional)" className="flex-1 bg-slate-900 p-2 rounded border border-slate-700 text-xs" value={q.imgUrl} onChange={e=>update(i,'imgUrl',e.target.value)}/>
-            <div className="flex items-center gap-2 text-xs">
-              <label>Auf Handy zeigen?</label>
-              <input type="checkbox" checked={q.showImg} onChange={e=>update(i,'showImg',e.target.checked)}/>
+          <div className="flex gap-4 items-center flex-wrap">
+            <input placeholder="Bild-URL (optional)" className="flex-1 min-w-[200px] bg-slate-900 p-2 rounded border border-slate-700 text-xs" value={q.imgUrl} onChange={e=>update(i,'imgUrl',e.target.value)}/>
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <label>Auf Handy zeigen?</label><input type="checkbox" checked={q.showImg} onChange={e=>update(i,'showImg',e.target.checked)}/>
             </div>
-            <div className="flex items-center gap-2">
-              <Clock size={16}/><input type="number" className="w-16 bg-slate-900 p-1 rounded border border-slate-700" value={q.timer} onChange={e=>update(i,'timer',parseInt(e.target.value))}/>
-            </div>
+            {q.type !== 'buzzer' && (
+              <div className="flex items-center gap-2 ml-auto">
+                <div className="text-right mr-2"><span className="block text-xs font-bold text-slate-400">Timer</span><span className="block text-[10px] text-slate-500">0=∞</span></div>
+                <Clock size={16}/><input type="number" min="0" className="w-16 bg-slate-900 p-2 rounded border border-slate-700" value={q.timer} onChange={e=>update(i,'timer',parseInt(e.target.value) || 0)}/>
+              </div>
+            )}
           </div>
           {q.type==='multiple' && <div className="grid grid-cols-2 gap-2">{q.options.map((o,oi)=>(
             <div key={oi} className="flex gap-2 p-2 bg-slate-900 rounded"><input type="radio" checked={q.correctIndex==oi} onChange={()=>update(i,'correctIndex',oi)}/><input className="bg-transparent w-full" value={o} onChange={e=>{const no=[...q.options];no[oi]=e.target.value;update(i,'options',no)}}/></div>
           ))}</div>}
           {q.type==='estimation' && <input type="number" className="w-full bg-slate-900 p-2 rounded border border-slate-700" value={q.correctValue} onChange={e=>update(i,'correctValue',e.target.value)} placeholder="Richtiger Wert"/>}
+          {q.type==='buzzer' && <p className="text-xs text-red-400 italic">Buzzer-Fragen haben keinen Timer. Der Schnellste sperrt die anderen.</p>}
         </div>
       ))}
       <div className="flex gap-4">
-        <button onClick={()=>setQs([...qs,{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:30,imgUrl:'',showImg:true}])} className="flex-1 bg-slate-800 py-3 rounded-2xl border border-slate-700 font-bold">+ Frage</button>
+        <button onClick={()=>setQs([...qs,{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true}])} className="flex-1 bg-slate-800 py-3 rounded-2xl border border-slate-700 font-bold">+ Frage</button>
         <button onClick={()=>onCreate(qs)} className="flex-1 bg-emerald-600 py-3 rounded-2xl font-bold">Quiz starten</button>
       </div>
     </div>
   );
 }
 
-function HostDashboard({ room, players, onReveal, onNext, onCorrect }) {
+function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCorrect }) {
   const q = room.questions[room.currentQuestionIndex];
-  if (room.status === 'lobby') return <div className="text-center py-10 space-y-10"><h2 className="text-7xl font-mono font-bold text-indigo-400">{room.id}</h2><div className="flex flex-wrap justify-center gap-2">{players.map(p=><span key={p.id} className="bg-slate-800 px-4 py-2 rounded-full border border-slate-700">{p.name}</span>)}</div><button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} className="bg-emerald-600 px-16 py-4 rounded-full text-2xl font-bold">Start!</button></div>;
-  if (room.status === 'finished') return <div className="space-y-4 max-w-xl mx-auto"><h2 className="text-center text-4xl text-yellow-400 font-bold">🏆 Endstand</h2>{players.map((p,i)=><div key={p.id} className="bg-slate-800 p-4 rounded-2xl flex justify-between border border-slate-700"><span>{i+1}. {p.name}</span><span className="font-mono text-xl">{p.score}</span></div>)}<button onClick={()=>downloadCSV(players,room)} className="w-full bg-slate-800 border border-slate-700 py-4 rounded-2xl flex items-center justify-center gap-2 font-bold"><Download/> Excel-Export</button></div>;
+  if (room.status === 'lobby') return <div className="text-center py-10 space-y-10"><h2 className="text-7xl font-mono font-bold text-indigo-400 tracking-widest">{room.id}</h2><div className="bg-slate-800 p-8 rounded-2xl border border-slate-700 max-w-lg mx-auto"><h3 className="mb-6 font-bold flex items-center justify-center gap-2 text-xl"><Users/> Teams ({players.length})</h3><div className="flex flex-wrap gap-2 justify-center">{players.map(p=><span key={p.id} className="bg-slate-700 px-4 py-1.5 rounded-full font-semibold">{p.name}</span>)}</div></div><button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-600 px-16 py-5 rounded-full text-2xl font-bold disabled:opacity-50 shadow-xl">Quiz starten!</button></div>;
+  if (room.status === 'finished') return <div className="space-y-4 max-w-xl mx-auto"><h2 className="text-center text-4xl text-yellow-400 font-bold mb-8">🏆 Endstand</h2>{players.map((p,i)=><div key={p.id} className={`p-5 rounded-2xl flex justify-between items-center border ${i===0?'bg-yellow-500/10 border-yellow-500':'bg-slate-800 border-slate-700'}`}><span>{i+1}. {p.name}</span><span className="font-mono text-2xl bg-slate-900 px-4 py-1 rounded-lg">{p.score}</span></div>)}<button onClick={()=>downloadCSV(players,room)} className="w-full bg-slate-800 border border-slate-700 py-4 rounded-2xl flex items-center justify-center gap-2 font-bold mt-8"><Download/> Excel-Export (CSV)</button></div>;
 
   return (
     <div className="grid md:grid-cols-3 gap-8">
       <div className="md:col-span-2 space-y-6">
-        <div className="bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-xl relative">
+        <div className="bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-xl relative min-h-[300px]">
           <div className="flex justify-between items-center mb-6">
              <span className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Frage {room.currentQuestionIndex+1}/{room.questions.length}</span>
-             <div className="flex items-center gap-2 text-yellow-400 font-mono text-2xl"><Clock/> {room.timeLeft}s</div>
+             {q.type !== 'buzzer' && <div className="flex items-center gap-2 text-yellow-400 font-mono text-2xl"><Clock/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</div>}
+             {q.type === 'buzzer' && <div className="flex items-center gap-2 text-red-500 font-bold uppercase"><Bell/> Buzzer aktiv</div>}
           </div>
-          {q.imgUrl && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl mb-6 bg-slate-900 p-2"/>}
+          {q.imgUrl && <img src={q.imgUrl} className="w-full h-64 object-contain rounded-xl mb-6 bg-slate-900 p-2"/>}
           <h2 className="text-3xl font-bold mb-8">{q.q}</h2>
-          {room.status === 'revealed' && <div className="bg-emerald-500/10 border border-emerald-500/50 p-4 rounded-xl mb-6">Lösung: <span className="font-bold">{q.type==='multiple'?q.options[q.correctIndex]:q.type==='estimation'?q.correctValue:'Manual'}</span></div>}
+
+          {q.type === 'buzzer' && room.status === 'active' && room.buzzerWinner && (
+            <div className="bg-red-500/20 border-2 border-red-500 p-8 rounded-2xl text-center shadow-[0_0_30px_rgba(239,68,68,0.2)] animate-pulse">
+              <p className="text-red-400 font-bold mb-2 uppercase tracking-widest">Am schnellsten war:</p>
+              <h3 className="text-4xl font-bold text-white mb-8">{room.buzzerWinnerName}</h3>
+              <div className="flex gap-4 justify-center">
+                <button onClick={()=>onBuzzerCorrect(false)} className="bg-slate-800 border border-slate-700 hover:bg-red-600 px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-colors"><XCircle/> Falsch (Sperren)</button>
+                <button onClick={()=>onBuzzerCorrect(true)} className="bg-emerald-600 hover:bg-emerald-500 px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-colors"><CheckCircle/> Richtig (+1 Punkt)</button>
+              </div>
+            </div>
+          )}
+
+          {room.status === 'revealed' && q.type !== 'buzzer' && <div className="bg-emerald-500/10 border border-emerald-500/50 p-4 rounded-xl mb-6">Lösung: <span className="font-bold">{q.type==='multiple'?q.options[q.correctIndex]:q.type==='estimation'?q.correctValue:'Manueller Check unten'}</span></div>}
+          {room.status === 'revealed' && q.type === 'buzzer' && <div className="bg-emerald-500/10 border border-emerald-500/50 p-6 rounded-xl text-center"><h3 className="text-2xl font-bold text-emerald-500 mb-2">Punkt vergeben!</h3><p>Team {room.buzzerWinnerName} hat richtig geantwortet.</p></div>}
+          
           {room.status === 'revealed' && q.type === 'text' && <div className="space-y-2">{players.map(p=>(
             <div key={p.id} className="flex justify-between items-center bg-slate-900 p-4 rounded-xl border border-slate-700">
               <div className="pr-2"><span className="text-xs text-slate-500 uppercase">{p.name}</span><p className="italic">"{p.currentAnswer||'---'}"</p></div>
@@ -265,31 +295,68 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect }) {
             </div>
           ))}</div>}
         </div>
-        <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-5 rounded-2xl font-bold text-xl shadow-lg ${room.status === 'active' ? 'bg-indigo-600' : 'bg-emerald-600'}`}>{room.status === 'active' ? 'Auflösen' : 'Weiter'}</button>
+        
+        {q.type !== 'buzzer' || room.status === 'revealed' ? (
+          <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-5 rounded-2xl font-bold text-xl shadow-lg ${room.status === 'active' ? 'bg-indigo-600' : 'bg-emerald-600'}`}>{room.status === 'active' ? 'Lösung auflösen' : 'Nächste Frage'}</button>
+        ) : null}
       </div>
       <div className="bg-slate-800 p-6 rounded-3xl border border-slate-700 h-fit">
-        <h3 className="font-bold mb-4">Ranking</h3>
-        {players.map(p=><div key={p.id} className="flex justify-between text-sm py-2 border-b border-slate-700/50"><span>{p.name}</span><div className="flex gap-2"> {p.currentAnswer?<CheckCircle size={14} className="text-emerald-500"/>:<div className="w-2 h-2 rounded-full bg-slate-700 animate-pulse mt-1.5"/>} <span className="font-mono">{p.score}</span></div></div>)}
+        <h3 className="font-bold mb-4">Live-Ranking</h3>
+        {players.map(p=><div key={p.id} className="flex justify-between text-sm py-2 border-b border-slate-700/50"><span>{p.name}</span><div className="flex gap-2"> {(p.currentAnswer || p.id === room.buzzerWinner)?<CheckCircle size={14} className="text-emerald-500"/>:<div className="w-2 h-2 rounded-full bg-slate-700 animate-pulse mt-1.5"/>} <span className="font-mono bg-slate-900 px-2 rounded border border-slate-700 text-indigo-300">{p.score}</span></div></div>)}
       </div>
     </div>
   );
 }
 
-function PlayerDashboard({ room, player, onAnswer }) {
+function PlayerDashboard({ room, player, onAnswer, onBuzz }) {
   if (!player) return null;
   const q = room.questions[room.currentQuestionIndex];
   const [v, setV] = useState('');
+  const isLockedOut = (room.buzzerLockedOut || []).includes(player.id);
+
   if (room.status === 'lobby') return <div className="text-center py-20 bg-slate-800 rounded-3xl border border-slate-700 shadow-xl max-w-sm mx-auto"><h2 className="text-2xl font-bold">Team {player.name}</h2><p className="mt-8 animate-pulse text-indigo-400">Warte auf Start...</p></div>;
   if (room.status === 'finished') return <div className="text-center py-20 bg-slate-800 rounded-3xl border border-slate-700 shadow-xl max-w-sm mx-auto"><Trophy size={64} className="mx-auto text-yellow-400 mb-6"/><div className="text-6xl font-bold">{player.score}</div></div>;
 
+  // BUZZER ANSICHT
+  if (q.type === 'buzzer') {
+    return (
+      <div className="max-w-md mx-auto space-y-6 text-center">
+        <div className="flex justify-between text-xs font-bold text-slate-500 uppercase tracking-widest mb-6"><span>Frage {room.currentQuestionIndex+1}</span><span className="text-indigo-400">Punkte: {player.score}</span></div>
+        {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-40 object-contain rounded-xl bg-slate-800 p-2 border border-slate-700 mb-6"/>}
+        <h2 className="text-2xl font-bold leading-tight mb-10">{q.q}</h2>
+
+        {room.status === 'active' && !room.buzzerWinner && !isLockedOut && (
+          <button onClick={onBuzz} className="w-64 h-64 rounded-full bg-red-600 hover:bg-red-500 border-8 border-red-800 shadow-[0_10px_0_#7f1d1d,0_0_50px_rgba(220,38,38,0.5)] active:shadow-[0_0px_0_#7f1d1d] active:translate-y-[10px] transition-all mx-auto flex items-center justify-center">
+            <span className="text-4xl font-black text-white tracking-widest drop-shadow-md">BUZZER</span>
+          </button>
+        )}
+        {room.status === 'active' && !room.buzzerWinner && isLockedOut && (
+          <div className="py-12 bg-slate-800 rounded-3xl border border-slate-700"><p className="text-slate-500 font-bold">Falsche Antwort.</p><p>Für diese Runde gesperrt.</p></div>
+        )}
+        {room.status === 'active' && room.buzzerWinner && room.buzzerWinner !== player.id && (
+          <div className="py-12 bg-slate-800 rounded-3xl border border-slate-700"><p className="text-xl font-bold text-slate-400 mb-2">Zu langsam!</p><p>Team <span className="text-white font-bold">{room.buzzerWinnerName}</span> antwortet gerade.</p></div>
+        )}
+        {room.status === 'active' && room.buzzerWinner === player.id && (
+          <div className="py-12 bg-red-500/20 rounded-3xl border-2 border-red-500 shadow-[0_0_30px_rgba(239,68,68,0.3)] animate-pulse"><h3 className="text-3xl font-bold text-red-400 mb-2">DU BIST DRAN!</h3><p>Nenne jetzt deine Antwort.</p></div>
+        )}
+        {room.status === 'revealed' && (
+          <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-500/10 border-emerald-500':'bg-slate-800 border-slate-700'}`}>
+            <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt!':'Runde vorbei.'}</h3>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // NORMALE ANSICHT
   return (
     <div className="max-w-md mx-auto space-y-6">
       <div className="flex justify-between text-xs font-bold text-slate-500 uppercase tracking-widest">
         <span>Frage {room.currentQuestionIndex+1}</span>
-        <span className="flex items-center gap-1 text-yellow-500"><Clock size={12}/> {room.timeLeft}s</span>
+        <span className="flex items-center gap-1 text-yellow-500"><Clock size={12}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</span>
       </div>
       <h2 className="text-2xl font-bold leading-tight">{q.q}</h2>
-      {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-40 object-contain rounded-xl bg-slate-800 p-2 border border-slate-700"/>}
+      {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-800 p-2 border border-slate-700"/>}
       {room.status === 'active' && !player.currentAnswer && (
         <div className="space-y-3">
           {q.type === 'multiple' && q.options.map((o,i)=><button key={i} onClick={()=>onAnswer(i)} className="w-full bg-slate-800 p-5 rounded-2xl text-left border border-slate-700 hover:bg-indigo-600 transition-colors">{o}</button>)}
