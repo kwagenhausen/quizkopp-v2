@@ -122,7 +122,7 @@ export default function App() {
         <div className={role === 'host' ? "w-full max-w-[1920px] mx-auto px-4 flex justify-between items-center" : "max-w-4xl mx-auto flex justify-between items-center"}>
           <div className="flex items-center gap-2">
             <Trophy className="text-yellow-400"/>
-            <h1 className="text-xl font-bold italic">QuizKopp Pro</h1>
+            <h1 className="text-xl font-bold italic">Die Quizkopp App</h1>
           </div>
           {role && <button onClick={() => { if(role==='host') deleteDoc(doc(db,'rooms',currentRoomCode)); setRole(null); setCurrentRoomCode(''); }} className="text-slate-400 hover:text-red-400 transition-colors"><LogOut size={20}/></button>}
         </div>
@@ -164,9 +164,10 @@ function LoginView({ onJoin, onAdmin }) {
   const [c, setC] = useState(''); const [n, setN] = useState('');
   return (
     <div className="max-w-md mx-auto pt-10 text-center">
-      {/* DEIN AKTUALISIERTES LOGO */}
+      
+      {/* HIER IST DIE ÄNDERUNG: src="/logo.png" */}
       <img 
-        src="https://drive.google.com/uc?export=view&id=1xT-mocFlux7kwrVvKxQvA25Z0UkPk1Ep" 
+        src="/logo.png" 
         alt="QuizKopp Logo" 
         className="w-64 h-auto mx-auto mb-10 drop-shadow-[0_0_25px_rgba(99,102,241,0.4)] transition-transform hover:scale-105"
       />
