@@ -20,12 +20,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// --- CI FARBPALETTE (LIGHT MODE) ---
-// Hintergrund: #F0F9FF (Helles Himmelblau)
-// Container: #FFFFFF (Weiß)
-// Akzent: #E69F00 (Gelb-Orange)
-// Text: #1E293B (Dunkles Schieferblau)
-
+// --- HELFER ---
 const generateRoomCode = () => {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let res = '';
@@ -36,6 +31,7 @@ const generateRoomCode = () => {
 const downloadCSV = (players, room) => {
   const headers = ["Platz", "Name", "Gesamtpunkte"];
   room.questions.forEach((q, i) => headers.push(`F${i+1}: ${q.q.replace(/,/g, "")}`));
+  
   const rows = players.map((p, i) => {
     const row = [i + 1, p.name, p.score];
     room.questions.forEach((q, qi) => {
@@ -46,6 +42,7 @@ const downloadCSV = (players, room) => {
     });
     return row;
   });
+
   const csv = "\uFEFF" + [headers, ...rows].map(e => e.join(",")).join("\n");
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
@@ -53,6 +50,7 @@ const downloadCSV = (players, room) => {
   a.href = url; a.download = `Quizkopp_Export_${room.id}.csv`; a.click();
 };
 
+// --- APP ---
 export default function App() {
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null); 
@@ -69,8 +67,9 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    onSnapshot(collection(db, 'rooms'), s => setAllRooms(s.docs.map(d => ({id: d.id, ...d.data()}))));
-    onSnapshot(collection(db, 'players'), s => setAllPlayers(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubR = onSnapshot(collection(db, 'rooms'), s => setAllRooms(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubP = onSnapshot(collection(db, 'players'), s => setAllPlayers(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    return () => { unsubR(); unsubP(); };
   }, [user]);
 
   const activeRoom = allRooms.find(r => r.id === currentRoomCode);
@@ -83,7 +82,7 @@ export default function App() {
       interval = setInterval(async () => {
         const newTime = activeRoom.timeLeft - 1;
         await updateDoc(doc(db, 'rooms', currentRoomCode), { timeLeft: newTime });
-        if (newTime <= 0) await updateDoc(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
+        if (newTime <= 0) revealAnswer(); // Nutzt jetzt die echte Auflöse-Funktion, wenn die Zeit abläuft!
       }, 1000);
     }
     return () => clearInterval(interval);
@@ -98,13 +97,73 @@ export default function App() {
     setCurrentRoomCode(code); setRole('host');
   };
 
+  const manualCorrect = async (pId, ok) => {
+    const p = players.find(x => x.id === pId);
+    await updateDoc(doc(db, 'players', pId), { score: ok ? p.score + 1 : p.score, corrected: true, wasCorrect: ok });
+  };
+
+  const handleBuzzerHost = async (isCorrect) => {
+    const pId = activeRoom.buzzerWinner;
+    if (isCorrect) {
+      for (const player of players) {
+        const isWinner = player.id === pId;
+        await updateDoc(doc(db, 'players', player.id), { 
+            score: isWinner ? player.score + 1 : player.score, 
+            wasCorrect: isWinner,
+            ...(isWinner ? {[`answers.${activeRoom.currentQuestionIndex}`]: true} : {})
+        });
+      }
+      await updateDoc(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
+    } else {
+      const locked = activeRoom.buzzerLockedOut || [];
+      await updateDoc(doc(db, 'rooms', currentRoomCode), { buzzerWinner: null, buzzerLockedOut: [...locked, pId] });
+    }
+  };
+
+  // --- NEUE, REPARIERTE REVEAL FUNKTION ---
+  const revealAnswer = async () => {
+    if(!activeRoom) return;
+    const q = activeRoom.questions[activeRoom.currentQuestionIndex];
+    
+    if (q.type === 'multiple') {
+      for (const p of players) {
+        const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
+        const isCorrect = hasAnswered && (p.currentAnswer == q.correctIndex);
+        await updateDoc(doc(db, 'players', p.id), { 
+            score: isCorrect ? p.score + 1 : p.score,
+            wasCorrect: isCorrect
+        });
+      }
+    } else if (q.type === 'estimation') {
+      const validPlayers = players.filter(p => p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "");
+      if (validPlayers.length > 0) {
+        const target = parseFloat(q.correctValue);
+        const diffs = validPlayers.map(p => Math.abs(parseFloat(p.currentAnswer) - target));
+        const minDiff = Math.min(...diffs);
+        
+        for (const p of players) {
+          const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
+          const isCorrect = hasAnswered && (Math.abs(parseFloat(p.currentAnswer) - target) === minDiff);
+          await updateDoc(doc(db, 'players', p.id), { 
+              score: isCorrect ? p.score + 1 : p.score,
+              wasCorrect: isCorrect
+          });
+        }
+      } else {
+         for (const p of players) await updateDoc(doc(db, 'players', p.id), { wasCorrect: false });
+      }
+    }
+    // Für 'text' und 'buzzer' verteilen wir hier noch keine Punkte, das macht der Host manuell.
+    await updateDoc(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
+  };
+
   if (loading) return <div className="min-h-screen bg-[#F0F9FF] flex items-center justify-center text-[#1E293B] font-bold">Lade Quizkopp...</div>;
 
   return (
     <div className="min-h-screen bg-[#F0F9FF] text-[#1E293B] font-sans">
       <header className="bg-white border-b border-sky-100 p-4 sticky top-0 z-10 shadow-sm">
         <div className={role === 'host' ? "w-full max-w-[1920px] mx-auto px-4 flex justify-between items-center" : "max-w-4xl mx-auto flex justify-between items-center"}>
-          <div className="flex items-center gap-2"><Trophy className="text-[#E69F00]"/><h1 className="text-xl font-bold italic">Die Quizkopp App</h1></div>
+          <div className="flex items-center gap-2"><Trophy className="text-[#E69F00]"/><h1 className="text-xl font-bold italic">Der Quizkopp Master</h1></div>
           {role && <button onClick={() => { if(role==='host') deleteDoc(doc(db,'rooms',currentRoomCode)); setRole(null); setCurrentRoomCode(''); }} className="text-slate-400 hover:text-red-500 transition-colors"><LogOut size={20}/></button>}
         </div>
       </header>
@@ -121,25 +180,12 @@ export default function App() {
         {role === 'setup' && <HostSetup onCreate={createRoom} onBack={() => setRole(null)} db={db}/>}
         {role === 'lib' && <Library onSelect={q => createRoom(q)} onBack={() => setRole(null)} db={db}/>}
 
-        {role === 'host' && activeRoom && <HostDashboard room={activeRoom} players={players} onReveal={async () => updateDoc(doc(db,'rooms',currentRoomCode),{status:'revealed'})} onNext={async () => {
+        {role === 'host' && activeRoom && <HostDashboard room={activeRoom} players={players} onReveal={revealAnswer} onNext={async () => {
             const last = activeRoom.currentQuestionIndex >= activeRoom.questions.length -1;
             const nextIdx = activeRoom.currentQuestionIndex + 1;
-            for(const p of players) await updateDoc(doc(db,'players',p.id),{currentAnswer:null,corrected:false});
+            for(const p of players) await updateDoc(doc(db,'players',p.id),{currentAnswer:null,corrected:false, wasCorrect:null});
             await updateDoc(doc(db,'rooms',currentRoomCode),{status:last?'finished':'active',currentQuestionIndex:last?activeRoom.currentQuestionIndex:nextIdx,timeLeft:activeRoom.questions[nextIdx]?.timer || 0, buzzerWinner: null, buzzerLockedOut: []});
-        }} onCorrect={async (pId, ok) => {
-            const p = players.find(x => x.id === pId);
-            await updateDoc(doc(db, 'players', pId), { score: ok ? p.score + 1 : p.score, corrected: true, wasCorrect: ok });
-        }} onBuzzerCorrect={async (isCorrect) => {
-            const pId = activeRoom.buzzerWinner;
-            if (isCorrect) {
-              const p = players.find(x => x.id === pId);
-              await updateDoc(doc(db, 'players', pId), { score: p.score + 1, [`answers.${activeRoom.currentQuestionIndex}`]: true });
-              await updateDoc(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
-            } else {
-              const locked = activeRoom.buzzerLockedOut || [];
-              await updateDoc(doc(db, 'rooms', currentRoomCode), { buzzerWinner: null, buzzerLockedOut: [...locked, pId] });
-            }
-        }}/>}
+        }} onCorrect={manualCorrect} onBuzzerCorrect={handleBuzzerHost}/>}
 
         {role === 'player' && activeRoom && <PlayerDashboard room={activeRoom} player={myProfile} onAnswer={async v => {
             await updateDoc(doc(db,'players',user.uid),{currentAnswer:v,[`answers.${activeRoom.currentQuestionIndex}`]:v});
@@ -256,11 +302,11 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   const q = room.questions[room.currentQuestionIndex];
   if (room.status === 'lobby') return (
     <div className="text-center py-20 space-y-12">
-      <p className="text-3xl text-slate-300 uppercase tracking-widest font-bold">Raum-Code</p>
+      <p className="text-3xl text-slate-400 uppercase tracking-widest font-bold">Raum-Code</p>
       <h2 className="text-[10rem] leading-none font-mono font-bold text-[#E69F00] tracking-widest">{room.id}</h2>
       <div className="bg-white p-8 rounded-3xl border border-sky-100 max-w-4xl mx-auto shadow-xl">
         <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl"><Users size={36}/> Teams ({players.length})</h3>
-        <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm">{p.name}</span>)}</div>
+        <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-700">{p.name}</span>)}</div>
       </div>
       <button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-500 text-white px-24 py-8 rounded-full text-4xl font-bold shadow-xl transition-all mt-10">Quiz starten!</button>
     </div>
@@ -285,7 +331,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
           <div className="flex justify-between items-center mb-8">
              <span className="text-lg font-bold text-slate-400 uppercase tracking-widest bg-slate-50 px-4 py-2 rounded-full border border-sky-50">Frage {room.currentQuestionIndex+1}/{room.questions.length}</span>
              {q.type !== 'buzzer' && <div className="flex items-center gap-3 text-[#E69F00] font-mono text-4xl font-bold bg-slate-50 px-6 py-2 rounded-full border border-sky-50"><Clock size={32}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</div>}
-             {q.type === 'buzzer' && <div className="flex items-center gap-3 text-red-500 font-bold uppercase text-2xl bg-red-50 px-6 py-2 rounded-full text-white animate-pulse"><Bell size={28}/> Buzzer aktiv</div>}
+             {q.type === 'buzzer' && <div className="flex items-center gap-3 text-red-500 font-bold uppercase text-2xl bg-red-50 px-6 py-2 rounded-full text-red-600 animate-pulse"><Bell size={28}/> Buzzer aktiv</div>}
           </div>
           {q.imgUrl && <img src={q.imgUrl} className="w-full max-h-[45vh] object-contain rounded-2xl mb-8 bg-slate-50 p-4 border border-sky-50"/>}
           <h2 className="text-4xl md:text-5xl lg:text-6xl font-bold mb-10 leading-tight">{q.q}</h2>
@@ -301,22 +347,22 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             </div>
           )}
 
-          {room.status === 'revealed' && q.type !== 'buzzer' && <div className="bg-emerald-50 border border-emerald-500/50 p-8 rounded-2xl mb-6 mt-auto"><p className="text-emerald-500 font-bold uppercase tracking-widest mb-2">Lösung</p><p className="text-4xl font-bold">{q.type==='multiple'?q.options[q.correctIndex]:q.type==='estimation'?q.correctValue:'Manual'}</p></div>}
+          {room.status === 'revealed' && q.type !== 'buzzer' && <div className="bg-emerald-50 border border-emerald-500/50 p-8 rounded-2xl mb-6 mt-auto"><p className="text-emerald-500 font-bold uppercase tracking-widest mb-2">Lösung</p><p className="text-4xl font-bold">{q.type==='multiple'?q.options[q.correctIndex]:q.type==='estimation'?q.correctValue:'Manuelle Auswertung'}</p></div>}
           {room.status === 'revealed' && q.type === 'text' && <div className="space-y-4 mt-auto">{players.map(p=>(
             <div key={p.id} className="flex justify-between items-center bg-slate-50 p-6 rounded-2xl border border-sky-50 shadow-sm">
               <div className="pr-4"><span className="text-sm font-bold text-slate-400 uppercase">{p.name}</span><p className="text-2xl italic mt-1">"{p.currentAnswer||'---'}"</p></div>
-              <div className="flex gap-3"><button onClick={()=>onCorrect(p.id,false)} className={`p-4 rounded-xl shadow-sm ${p.corrected&&!p.wasCorrect?'bg-red-500 text-white':'bg-white text-slate-300'}`}><XCircle size={32}/></button><button onClick={()=>onCorrect(p.id,true)} className={`p-4 rounded-xl shadow-sm ${p.corrected&&p.wasCorrect?'bg-emerald-500 text-white':'bg-white text-slate-300'}`}><CheckCircle size={32}/></button></div>
+              <div className="flex gap-3"><button onClick={()=>onCorrect(p.id,false)} className={`p-4 rounded-xl shadow-sm ${p.corrected&&!p.wasCorrect?'bg-red-500 text-white':'bg-white text-slate-300 hover:text-red-500'}`}><XCircle size={32}/></button><button onClick={()=>onCorrect(p.id,true)} className={`p-4 rounded-xl shadow-sm ${p.corrected&&p.wasCorrect?'bg-emerald-500 text-white':'bg-white text-slate-300 hover:text-emerald-500'}`}><CheckCircle size={32}/></button></div>
             </div>
           ))}</div>}
         </div>
         {(q.type !== 'buzzer' || room.status === 'revealed') && <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>{room.status === 'active' ? 'Lösung auflösen' : 'Nächste Frage'}</button>}
       </div>
       <div className="bg-white p-8 rounded-3xl border border-sky-100 h-fit sticky top-24 shadow-xl">
-        <h3 className="text-2xl font-bold mb-8 uppercase tracking-widest text-slate-300">Ranking</h3>
+        <h3 className="text-2xl font-bold mb-8 uppercase tracking-widest text-slate-400">Ranking</h3>
         <div className="space-y-4">{players.map((p, index)=>(
             <div key={p.id} className="flex justify-between text-lg items-center bg-slate-50 p-4 rounded-xl border border-sky-50 shadow-sm">
-              <span className="font-bold flex items-center gap-3"><span className="text-slate-300 text-sm">{index + 1}.</span> {p.name}</span>
-              <div className="flex items-center gap-4">{(p.currentAnswer || p.id === room.buzzerWinner) ? <CheckCircle size={20} className="text-emerald-500"/> : <div className="w-3 h-3 rounded-full bg-slate-200 animate-pulse mt-1"/>}<span className="font-mono font-bold bg-white px-3 py-1 rounded-lg border border-sky-50 text-[#E69F00] shadow-inner">{p.score}</span></div>
+              <span className="font-bold flex items-center gap-3 text-slate-700"><span className="text-slate-400 text-sm">{index + 1}.</span> {p.name}</span>
+              <div className="flex items-center gap-4">{((p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "") || p.id === room.buzzerWinner) ? <CheckCircle size={20} className="text-emerald-500"/> : <div className="w-3 h-3 rounded-full bg-slate-200 animate-pulse mt-1"/>}<span className="font-mono font-bold bg-white px-3 py-1 rounded-lg border border-sky-50 text-[#E69F00] shadow-inner">{p.score}</span></div>
             </div>
           ))}</div>
       </div>
@@ -328,9 +374,14 @@ function PlayerDashboard({ room, player, onAnswer, onBuzz }) {
   if (!player) return null;
   const q = room.questions[room.currentQuestionIndex];
   const [v, setV] = useState('');
+  
+  // Sicherer Check, ob der Spieler ECHT geantwortet hat (verhindert den 0-Bug)
+  const hasAnswered = player.currentAnswer !== null && player.currentAnswer !== undefined && player.currentAnswer !== "";
   const isLockedOut = (room.buzzerLockedOut || []).includes(player.id);
+
   if (room.status === 'lobby') return <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto"><h2 className="text-2xl font-bold">Team {player.name}</h2><p className="mt-8 animate-pulse text-[#E69F00]">Warte auf Start...</p></div>;
   if (room.status === 'finished') return <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto"><Trophy size={64} className="mx-auto text-[#E69F00] mb-6"/><div className="text-6xl font-bold">{player.score}</div></div>;
+  
   if (q.type === 'buzzer') {
     return (
       <div className="max-w-md mx-auto space-y-6 text-center">
@@ -343,19 +394,34 @@ function PlayerDashboard({ room, player, onAnswer, onBuzz }) {
       </div>
     );
   }
+  
   return (
     <div className="max-w-md mx-auto space-y-6">
       <div className="flex justify-between text-xs font-bold text-slate-400 uppercase tracking-widest"><span>Frage {room.currentQuestionIndex+1}</span><span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</span></div>
       <h2 className="text-2xl font-bold leading-tight">{q.q}</h2>
       {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
-      {room.status === 'active' && !player.currentAnswer && (
+      
+      {room.status === 'active' && !hasAnswered && (
         <div className="space-y-3 pt-4">
           {q.type === 'multiple' && q.options.map((o,i)=><button key={i} onClick={()=>onAnswer(i)} className="w-full bg-white p-5 rounded-2xl text-left border border-sky-100 hover:bg-sky-50 transition-colors shadow-sm font-medium">{o}</button>)}
-          {(q.type === 'text' || q.type === 'estimation') && <div className="space-y-4"><input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-5 rounded-2xl border border-sky-100 outline-none focus:border-[#E69F00]" value={v} onChange={e=>setV(e.target.value)} placeholder="Antwort..."/><button onClick={()=>onAnswer(v)} disabled={!v} className="w-full bg-[#E69F00] text-white py-4 rounded-2xl font-bold shadow-md">Abschicken</button></div>}
+          {(q.type === 'text' || q.type === 'estimation') && <div className="space-y-4"><input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-5 rounded-2xl border border-sky-100 outline-none focus:border-[#E69F00]" value={v} onChange={e=>setV(e.target.value)} placeholder="Antwort..."/><button onClick={()=>onAnswer(v)} disabled={!v} className="w-full bg-[#E69F00] text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">Abschicken</button></div>}
         </div>
       )}
-      {player.currentAnswer && room.status === 'active' && <div className="text-center py-12 bg-white rounded-3xl border border-sky-100 shadow-inner">Eingeloggt!</div>}
-      {room.status === 'revealed' && <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}><h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt!':'Kein Punkt'}</h3></div>}
+      
+      {hasAnswered && room.status === 'active' && <div className="text-center py-12 bg-white rounded-3xl border border-sky-100 shadow-inner text-[#E69F00] font-bold text-lg flex flex-col items-center gap-2"><CheckCircle size={32}/> Antwort eingeloggt!</div>}
+      
+      {room.status === 'revealed' && q.type === 'text' && !player.corrected && (
+          <div className="py-12 rounded-3xl border-2 text-center bg-slate-50 border-sky-100 text-slate-400">
+             <h3 className="text-xl font-bold animate-pulse">Quizmaster wertet aus...</h3>
+          </div>
+      )}
+      
+      {room.status === 'revealed' && (q.type !== 'text' || player.corrected) && (
+         <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
+             <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für euch!':'Leider kein Punkt.'}</h3>
+             {q.type === 'estimation' && <p className="mt-2 text-sm text-slate-600 font-bold bg-white inline-block px-4 py-1 rounded-full border border-slate-200">Lösung: {q.correctValue}</p>}
+         </div>
+      )}
     </div>
   );
 }
