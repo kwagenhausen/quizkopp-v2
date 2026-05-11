@@ -182,7 +182,7 @@ export default function App() {
     <div className="min-h-screen bg-[#F0F9FF] text-[#1E293B] font-sans">
       <header className="bg-white border-b border-sky-100 p-4 sticky top-0 z-10 shadow-sm">
         <div className={role === 'host' ? "w-full max-w-[1920px] mx-auto px-4 flex justify-between items-center" : "max-w-4xl mx-auto flex justify-between items-center"}>
-          <div className="flex items-center gap-2"><Trophy className="text-[#E69F00]"/><h1 className="text-xl font-bold italic">Der Quizkopp Master</h1></div>
+          <div className="flex items-center gap-2"><Trophy className="text-[#E69F00]"/><h1 className="text-xl font-bold italic">Die Quizkopp App</h1></div>
           {role && <button onClick={() => { if(role==='host') deleteDoc(doc(db,'rooms',currentRoomCode)); setRole(null); setCurrentRoomCode(''); }} className="text-slate-400 hover:text-red-500 transition-colors"><LogOut size={20}/></button>}
         </div>
       </header>
