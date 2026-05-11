@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
 
 // --- KONFIGURATION ---
 const ADMIN_PASSWORD = "quiz"; // DEIN PASSWORT
@@ -29,11 +29,11 @@ const generateRoomCode = () => {
 };
 
 const downloadCSV = (players, room) => {
-  const headers = ["Platz", "Name", "Gesamtpunkte"];
+  const headers = ["Platz", "Name", "Team", "Gesamtpunkte"];
   room.questions.forEach((q, i) => headers.push(`F${i+1}: ${q.q.replace(/,/g, "")}`));
   
   const rows = players.map((p, i) => {
-    const row = [i + 1, p.name, p.score];
+    const row = [i + 1, p.name, p.team || "-", p.score];
     room.questions.forEach((q, qi) => {
       const a = p.answers?.[qi];
       if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
@@ -105,48 +105,75 @@ export default function App() {
 
   const handleBuzzerHost = async (isCorrect) => {
     const pId = activeRoom.buzzerWinner;
+    const batch = writeBatch(db);
+    
     if (isCorrect) {
       for (const player of players) {
         const isWinner = player.id === pId;
-        await updateDoc(doc(db, 'players', player.id), { 
+        batch.update(doc(db, 'players', player.id), { 
             score: isWinner ? player.score + 1 : player.score, 
             wasCorrect: isWinner,
             ...(isWinner ? {[`answers.${activeRoom.currentQuestionIndex}`]: true} : {})
         });
       }
-      await updateDoc(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
+      batch.update(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
     } else {
       const locked = activeRoom.buzzerLockedOut || [];
-      await updateDoc(doc(db, 'rooms', currentRoomCode), { buzzerWinner: null, buzzerLockedOut: [...locked, pId] });
+      batch.update(doc(db, 'rooms', currentRoomCode), { buzzerWinner: null, buzzerLockedOut: [...locked, pId] });
     }
+    await batch.commit();
   };
 
+  // --- DIE NEUE TEAM-SCHÄTZ-LOGIK ---
   const revealAnswer = async () => {
     if(!activeRoom) return;
     const q = activeRoom.questions[activeRoom.currentQuestionIndex];
+    const batch = writeBatch(db);
     
     if (q.type === 'multiple') {
       for (const p of players) {
         const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
         const isCorrect = hasAnswered && (p.currentAnswer == q.correctIndex);
-        await updateDoc(doc(db, 'players', p.id), { score: isCorrect ? p.score + 1 : p.score, wasCorrect: isCorrect });
+        batch.update(doc(db, 'players', p.id), { score: isCorrect ? p.score + 1 : p.score, wasCorrect: isCorrect });
       }
     } else if (q.type === 'estimation') {
       const validPlayers = players.filter(p => p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "");
       if (validPlayers.length > 0) {
         const target = parseFloat(q.correctValue);
-        const diffs = validPlayers.map(p => Math.abs(parseFloat(p.currentAnswer) - target));
-        const minDiff = Math.min(...diffs);
+        
+        // 1. Sammle und gruppiere alle Antworten nach Team
+        const teams = {};
+        for (const p of validPlayers) {
+          // Falls kein Teamname existiert, bilde ein 1-Mann-Team anhand der ID
+          const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.id;
+          if (!teams[tId]) teams[tId] = { sum: 0, count: 0 };
+          teams[tId].sum += parseFloat(p.currentAnswer);
+          teams[tId].count++;
+        }
+        
+        // 2. Berechne den Durchschnitt pro Team und finde die kleinste Differenz
+        let minDiff = Infinity;
+        const teamDiffs = {};
+        for (const tId in teams) {
+          const avg = teams[tId].sum / teams[tId].count;
+          const diff = Math.abs(avg - target);
+          teamDiffs[tId] = diff;
+          if (diff < minDiff) minDiff = diff;
+        }
+        
+        // 3. Vergib die Punkte an alle Spieler der Sieger-Teams
         for (const p of players) {
           const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
-          const isCorrect = hasAnswered && (Math.abs(parseFloat(p.currentAnswer) - target) === minDiff);
-          await updateDoc(doc(db, 'players', p.id), { score: isCorrect ? p.score + 1 : p.score, wasCorrect: isCorrect });
+          const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.id;
+          const isCorrect = hasAnswered && (teamDiffs[tId] === minDiff);
+          batch.update(doc(db, 'players', p.id), { score: isCorrect ? p.score + 1 : p.score, wasCorrect: isCorrect });
         }
       } else {
-         for (const p of players) await updateDoc(doc(db, 'players', p.id), { wasCorrect: false });
+         for (const p of players) batch.update(doc(db, 'players', p.id), { wasCorrect: false });
       }
     }
-    await updateDoc(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
+    batch.update(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
+    await batch.commit();
   };
 
   if (loading) return <div className="min-h-screen bg-[#F0F9FF] flex items-center justify-center text-[#1E293B] font-bold">Lade Quizkopp...</div>;
@@ -161,9 +188,10 @@ export default function App() {
       </header>
 
       <main className={role === 'host' ? "w-full max-w-[1920px] mx-auto p-4 lg:p-8 relative" : "max-w-4xl mx-auto p-4 py-8 relative"}>
-        {!role && !adminAuth && <LoginView onJoin={async (c, n) => {
+        {!role && !adminAuth && <LoginView onJoin={async (c, n, t) => {
             if(!allRooms.find(r=>r.id===c.toUpperCase())) return alert("Raum nicht gefunden!");
-            await setDoc(doc(db,'players',user.uid),{name:n,roomCode:c.toUpperCase(),score:0,currentAnswer:null,answers:{}});
+            // Das Team wird jetzt mit in die Datenbank geschrieben
+            await setDoc(doc(db,'players',user.uid),{name:n, team:t, roomCode:c.toUpperCase(),score:0,currentAnswer:null,answers:{}});
             setCurrentRoomCode(c.toUpperCase()); setRole('player');
         }} onAdmin={() => setAdminAuth('login')}/>}
 
@@ -178,15 +206,28 @@ export default function App() {
         {role === 'host' && activeRoom && <HostDashboard room={activeRoom} players={players} onReveal={revealAnswer} onNext={async () => {
             const last = activeRoom.currentQuestionIndex >= activeRoom.questions.length -1;
             const nextIdx = activeRoom.currentQuestionIndex + 1;
-            for(const p of players) await updateDoc(doc(db,'players',p.id),{currentAnswer:null,corrected:false, wasCorrect:null});
-            await updateDoc(doc(db,'rooms',currentRoomCode),{status:last?'finished':'active',currentQuestionIndex:last?activeRoom.currentQuestionIndex:nextIdx,timeLeft:activeRoom.questions[nextIdx]?.timer || 0, buzzerWinner: null, buzzerLockedOut: []});
+            const batch = writeBatch(db);
+            
+            for(const p of players) {
+              batch.update(doc(db,'players',p.id),{currentAnswer:null,corrected:false, wasCorrect:null});
+            }
+            batch.update(doc(db,'rooms',currentRoomCode),{
+              status:last?'finished':'active',
+              currentQuestionIndex:last?activeRoom.currentQuestionIndex:nextIdx,
+              timeLeft:activeRoom.questions[nextIdx]?.timer || 0, 
+              buzzerWinner: null, 
+              buzzerReaction: null, // Reaktionszeit für die nächste Frage zurücksetzen
+              buzzerLockedOut: []
+            });
+            await batch.commit();
         }} onCorrect={manualCorrect} onBuzzerCorrect={handleBuzzerHost}/>}
 
         {role === 'player' && activeRoom && <PlayerDashboard room={activeRoom} player={myProfile} players={players} onAnswer={async v => {
             await updateDoc(doc(db,'players',user.uid),{currentAnswer:v,[`answers.${activeRoom.currentQuestionIndex}`]:v});
-        }} onBuzz={async () => {
+        }} onBuzz={async (reactionTime) => {
+            // Die Zeit wird übergeben und gespeichert!
             if(!activeRoom.buzzerWinner && !(activeRoom.buzzerLockedOut || []).includes(user.uid)) {
-              await updateDoc(doc(db,'rooms',currentRoomCode),{buzzerWinner: user.uid, buzzerWinnerName: myProfile.name});
+              await updateDoc(doc(db,'rooms',currentRoomCode),{buzzerWinner: user.uid, buzzerWinnerName: myProfile.name, buzzerReaction: reactionTime});
             }
         }}/>}
       </main>
@@ -195,15 +236,19 @@ export default function App() {
 }
 
 function LoginView({ onJoin, onAdmin }) {
-  const [c, setC] = useState(''); const [n, setN] = useState('');
+  const [c, setC] = useState(''); 
+  const [n, setN] = useState('');
+  const [t, setT] = useState(''); // Das neue Team-Feld
+  
   return (
     <div className="max-w-md mx-auto pt-10 text-center">
-      {/* HIER DAS LOKALE LOGO */}
       <img src="/logo.png" alt="Quizkopp Logo" className="w-64 h-auto mx-auto mb-10 drop-shadow-md transition-transform hover:scale-105" />
       <div className="bg-white p-8 rounded-3xl border border-sky-100 shadow-xl space-y-4">
         <input placeholder="RAUM-CODE" className="w-full bg-slate-50 p-4 rounded-xl text-center text-2xl font-mono border border-sky-100 outline-none focus:border-[#E69F00]" value={c} onChange={e=>setC(e.target.value.toUpperCase())} maxLength={4}/>
-        <input placeholder="TEAMNAME" className="w-full bg-slate-50 p-4 rounded-xl border border-sky-100 outline-none" value={n} onChange={e=>setN(e.target.value)}/>
-        <button onClick={() => onJoin(c, n)} disabled={!c || !n} className="w-full bg-[#E69F00] text-white py-4 rounded-xl font-bold text-lg hover:bg-[#D49100] transition-colors shadow-md">Jetzt beitreten</button>
+        <input placeholder="DEIN NAME" className="w-full bg-slate-50 p-4 rounded-xl border border-sky-100 outline-none focus:border-[#E69F00]" value={n} onChange={e=>setN(e.target.value)}/>
+        <input placeholder="TEAMNAME (OPTIONAL)" className="w-full bg-slate-50 p-4 rounded-xl border border-sky-100 outline-none focus:border-[#E69F00]" value={t} onChange={e=>setT(e.target.value)}/>
+        
+        <button onClick={() => onJoin(c, n, t)} disabled={!c || !n} className="w-full bg-[#E69F00] text-white py-4 rounded-xl font-bold text-lg hover:bg-[#D49100] transition-colors shadow-md disabled:opacity-50">Jetzt beitreten</button>
       </div>
       <button onClick={onAdmin} className="mt-20 text-slate-300 hover:text-slate-500 text-xs">Admin-Zentrale</button>
     </div>
@@ -324,7 +369,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
 
 function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCorrect }) {
   const q = room.questions[room.currentQuestionIndex];
-  
   const isLastQuestion = room.currentQuestionIndex >= room.questions.length - 1;
 
   if (room.status === 'lobby') return (
@@ -332,18 +376,28 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
       <p className="text-3xl text-slate-400 uppercase tracking-widest font-bold">Raum-Code</p>
       <h2 className="text-[10rem] leading-none font-mono font-bold text-[#E69F00] tracking-widest">{room.id}</h2>
       <div className="bg-white p-8 rounded-3xl border border-sky-100 max-w-4xl mx-auto shadow-xl">
-        <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700"><Users size={36}/> Teams ({players.length})</h3>
-        <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">{p.name}</span>)}</div>
+        <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700"><Users size={36}/> Teilnehmer ({players.length})</h3>
+        <div className="flex flex-wrap gap-4 justify-center">
+          {players.map(p=>(
+            <span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">
+              {p.name} {p.team && <span className="text-sm font-normal text-slate-400 ml-1">({p.team})</span>}
+            </span>
+          ))}
+        </div>
       </div>
       <button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-500 text-white px-24 py-8 rounded-full text-4xl font-bold shadow-xl transition-all mt-10">Quiz starten!</button>
     </div>
   );
+  
   if (room.status === 'finished') return (
     <div className="space-y-8 max-w-4xl mx-auto py-10 text-slate-700 relative h-full">
       <h2 className="text-center text-6xl text-[#E69F00] font-bold mb-12">🏆 Endstand</h2>
       {players.map((p,i)=>(
         <div key={p.id} className={`p-8 rounded-3xl flex justify-between items-center border ${i===0?'bg-yellow-50 border-[#E69F00] shadow-md':'bg-white border-sky-50 shadow-sm'}`}>
-          <span className="text-3xl font-bold">{i+1}. {p.name}</span>
+          <div>
+            <span className="text-3xl font-bold block">{i+1}. {p.name}</span>
+            {p.team && <span className="text-lg text-slate-400">Team: {p.team}</span>}
+          </div>
           <span className="font-mono text-4xl bg-slate-50 px-6 py-2 rounded-xl text-[#E69F00]">{p.score}</span>
         </div>
       ))}
@@ -367,7 +421,15 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             {q.type === 'buzzer' && room.status === 'active' && room.buzzerWinner && (
               <div className="bg-red-50 border-2 border-red-500 p-12 rounded-3xl text-center shadow-2xl animate-pulse mt-auto">
                 <p className="text-red-500 font-bold text-xl mb-4 uppercase tracking-widest">Schnellster Buzzer:</p>
-                <h3 className="text-6xl md:text-7xl font-black text-slate-800 mb-12">{room.buzzerWinnerName}</h3>
+                <h3 className="text-6xl md:text-7xl font-black text-slate-800 mb-2">{room.buzzerWinnerName}</h3>
+                
+                {/* ANZEIGE DER REAKTIONSZEIT */}
+                {room.buzzerReaction && (
+                    <p className="text-2xl font-bold text-red-500 mb-8 flex items-center justify-center gap-2">
+                        <Clock size={24}/> {(room.buzzerReaction / 1000).toFixed(2)} Sekunden
+                    </p>
+                )}
+
                 <div className="flex gap-6 justify-center">
                   <button onClick={()=>onBuzzerCorrect(false)} className="bg-white border border-red-200 text-red-500 hover:bg-red-500 hover:text-white px-8 py-5 rounded-2xl font-bold text-xl flex items-center gap-3 transition-colors"><XCircle size={28}/> Falsch</button>
                   <button onClick={()=>onBuzzerCorrect(true)} className="bg-emerald-500 text-white px-8 py-5 rounded-2xl font-bold text-xl flex items-center gap-3"><CheckCircle size={28}/> Richtig</button>
@@ -386,7 +448,11 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             
             {room.status === 'revealed' && q.type === 'text' && <div className="space-y-4 mt-auto">{players.map(p=>(
               <div key={p.id} className="flex justify-between items-center bg-slate-50 p-6 rounded-2xl border border-sky-50 shadow-sm">
-                <div className="pr-4"><span className="text-sm font-bold text-slate-400 uppercase">{p.name}</span><p className="text-2xl italic mt-1">"{p.currentAnswer||'---'}"</p></div>
+                <div className="pr-4">
+                    <span className="text-sm font-bold text-slate-400 uppercase">{p.name}</span>
+                    {p.team && <span className="text-xs text-slate-400 ml-2">({p.team})</span>}
+                    <p className="text-2xl italic mt-1">"{p.currentAnswer||'---'}"</p>
+                </div>
                 <div className="flex gap-3"><button onClick={()=>onCorrect(p.id,false)} className={`p-4 rounded-xl shadow-sm ${p.corrected&&!p.wasCorrect?'bg-red-500 text-white':'bg-white text-slate-300 hover:text-red-500'}`}><XCircle size={32}/></button><button onClick={()=>onCorrect(p.id,true)} className={`p-4 rounded-xl shadow-sm ${p.corrected&&p.wasCorrect?'bg-emerald-500 text-white':'bg-white text-slate-300 hover:text-emerald-500'}`}><CheckCircle size={32}/></button></div>
               </div>
             ))}</div>}
@@ -402,7 +468,10 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
           <h3 className="text-2xl font-bold mb-8 uppercase tracking-widest text-slate-300">Ranking</h3>
           <div className="space-y-4">{players.map((p, index)=>(
               <div key={p.id} className="flex justify-between text-lg items-center bg-slate-50 p-4 rounded-xl border border-sky-50 shadow-sm">
-                <span className="font-bold flex items-center gap-3 text-slate-700"><span className="text-slate-400 text-sm">{index + 1}.</span> {p.name}</span>
+                <span className="font-bold flex items-center gap-3 text-slate-700">
+                    <span className="text-slate-400 text-sm">{index + 1}.</span> 
+                    <div>{p.name} {p.team && <div className="text-xs font-normal text-slate-400">{p.team}</div>}</div>
+                </span>
                 <div className="flex items-center gap-4">{((p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "") || p.id === room.buzzerWinner) ? <CheckCircle size={20} className="text-emerald-500"/> : <div className="w-3 h-3 rounded-full bg-slate-200 animate-pulse mt-1"/>}<span className="font-mono font-bold bg-white px-3 py-1 rounded-lg border border-sky-50 text-[#E69F00] shadow-inner">{p.score}</span></div>
               </div>
             ))}</div>
@@ -422,9 +491,12 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
   const q = room.questions[room.currentQuestionIndex];
   
   const [v, setV] = useState('');
+  // NEU: Lokale Stoppuhr, um die Latenzzeit perfekt zu berechnen
+  const [qStartTime, setQStartTime] = useState(Date.now());
   
   useEffect(() => {
     setV('');
+    setQStartTime(Date.now()); // Stoppuhr startet neu, wenn eine neue Frage geladen wird
   }, [room.currentQuestionIndex]);
   
   const hasAnswered = player.currentAnswer !== null && player.currentAnswer !== undefined && player.currentAnswer !== "";
@@ -432,7 +504,20 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
 
   const timeIsUp = q.timer > 0 && room.timeLeft === 0 && room.status === 'active';
 
-  if (room.status === 'lobby') return <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700"><h2 className="text-2xl font-bold">Team {player.name}</h2><p className="mt-8 animate-pulse text-[#E69F00]">Warte auf Start...</p></div>;
+  // HILFSFUNKTION FÜR DEN SOUND & BUZZER
+  const handleBuzzClick = () => {
+    // 1. Spiele Sound ab
+    try {
+        const audio = new Audio('/buzzer.mp3');
+        audio.play().catch(e => console.log("Sound konnte nicht abgespielt werden:", e));
+    } catch(err) { /* Ignoriere Fehler bei alten Browsern */ }
+    
+    // 2. Berechne Zeit und funke an Host
+    const reactionTimeMs = Date.now() - qStartTime;
+    onBuzz(reactionTimeMs);
+  };
+
+  if (room.status === 'lobby') return <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700"><h2 className="text-2xl font-bold">Hallo {player.name}!</h2><p className="mt-8 animate-pulse text-[#E69F00]">Warte auf Start...</p></div>;
   
   if (room.status === 'finished') {
     const myRank = players.findIndex(p => p.id === player.id) + 1;
@@ -452,9 +537,15 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
         <div className="flex justify-between text-xs font-bold text-slate-400 uppercase tracking-widest mb-6"><span>Frage {room.currentQuestionIndex+1}</span><span className="text-[#E69F00]">Score: {player.score}</span></div>
         {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-40 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 mb-6"/>}
         <h2 className="text-2xl font-bold mb-10">{q.q}</h2>
-        {room.status === 'active' && !room.buzzerWinner && !isLockedOut && <button onClick={onBuzz} className="w-64 h-64 rounded-full bg-red-600 border-8 border-red-800 shadow-[0_10px_0_#7f1d1d,0_0_50px_rgba(220,38,38,0.3)] active:translate-y-[10px] active:shadow-none transition-all mx-auto flex items-center justify-center"><span className="text-4xl font-black text-white">BUZZER</span></button>}
+        
+        {room.status === 'active' && !room.buzzerWinner && !isLockedOut && (
+            <button onClick={handleBuzzClick} className="w-64 h-64 rounded-full bg-red-600 border-8 border-red-800 shadow-[0_10px_0_#7f1d1d,0_0_50px_rgba(220,38,38,0.3)] active:translate-y-[10px] active:shadow-none transition-all mx-auto flex items-center justify-center">
+                <span className="text-4xl font-black text-white">BUZZER</span>
+            </button>
+        )}
+        
         {room.status === 'active' && room.buzzerWinner && room.buzzerWinner === player.id && <div className="py-12 bg-red-50 rounded-3xl border-2 border-red-500 animate-pulse text-3xl font-bold text-red-500">DU BIST DRAN!</div>}
-        {room.status === 'revealed' && <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-slate-50 border-sky-100 text-slate-400'}`}><h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt!':'Vorbei'}</h3></div>}
+        {room.status === 'revealed' && typeof player.wasCorrect === 'boolean' && <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-slate-50 border-sky-100 text-slate-400'}`}><h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt!':'Vorbei'}</h3></div>}
       </div>
     );
   }
@@ -488,7 +579,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
           </div>
       )}
       
-      {room.status === 'revealed' && (q.type !== 'text' || player.corrected) && (
+      {room.status === 'revealed' && (q.type !== 'text' || player.corrected) && typeof player.wasCorrect === 'boolean' && (
          <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
              <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für euch!':'Leider kein Punkt.'}</h3>
              {q.type === 'estimation' && <p className="mt-2 text-sm text-slate-600 font-bold bg-white inline-block px-4 py-1 rounded-full border border-slate-200">Lösung: {q.correctValue}</p>}
