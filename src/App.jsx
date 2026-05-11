@@ -84,7 +84,6 @@ export default function App() {
       interval = setInterval(async () => {
         const newTime = activeRoom.timeLeft - 1;
         await updateDoc(doc(db, 'rooms', currentRoomCode), { timeLeft: newTime });
-        // ANPASSUNG 2: Bei 0 Sekunden lösen wir nicht mehr auf! Wir lassen es einfach stehen.
       }, 1000);
     }
     return () => clearInterval(interval);
@@ -183,7 +182,6 @@ export default function App() {
             await updateDoc(doc(db,'rooms',currentRoomCode),{status:last?'finished':'active',currentQuestionIndex:last?activeRoom.currentQuestionIndex:nextIdx,timeLeft:activeRoom.questions[nextIdx]?.timer || 0, buzzerWinner: null, buzzerLockedOut: []});
         }} onCorrect={manualCorrect} onBuzzerCorrect={handleBuzzerHost}/>}
 
-        {/* ANPASSUNG 5: Übergabe der 'players' Liste an das PlayerDashboard für die Platzierung */}
         {role === 'player' && activeRoom && <PlayerDashboard room={activeRoom} player={myProfile} players={players} onAnswer={async v => {
             await updateDoc(doc(db,'players',user.uid),{currentAnswer:v,[`answers.${activeRoom.currentQuestionIndex}`]:v});
         }} onBuzz={async () => {
@@ -200,7 +198,8 @@ function LoginView({ onJoin, onAdmin }) {
   const [c, setC] = useState(''); const [n, setN] = useState('');
   return (
     <div className="max-w-md mx-auto pt-10 text-center">
-      <img src="https://drive.google.com/uc?export=view&id=1xT-mocFlux7kwrVvKxQvA25Z0UkPk1Ep" alt="Quizkopp Logo" className="w-64 h-auto mx-auto mb-10 drop-shadow-md transition-transform hover:scale-105" />
+      {/* HIER DAS LOKALE LOGO */}
+      <img src="/logo.png" alt="Quizkopp Logo" className="w-64 h-auto mx-auto mb-10 drop-shadow-md transition-transform hover:scale-105" />
       <div className="bg-white p-8 rounded-3xl border border-sky-100 shadow-xl space-y-4">
         <input placeholder="RAUM-CODE" className="w-full bg-slate-50 p-4 rounded-xl text-center text-2xl font-mono border border-sky-100 outline-none focus:border-[#E69F00]" value={c} onChange={e=>setC(e.target.value.toUpperCase())} maxLength={4}/>
         <input placeholder="TEAMNAME" className="w-full bg-slate-50 p-4 rounded-xl border border-sky-100 outline-none" value={n} onChange={e=>setN(e.target.value)}/>
@@ -326,7 +325,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
 function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCorrect }) {
   const q = room.questions[room.currentQuestionIndex];
   
-  // ANPASSUNG 4: Prüfen, ob wir in der letzten Frage sind
   const isLastQuestion = room.currentQuestionIndex >= room.questions.length - 1;
 
   if (room.status === 'lobby') return (
@@ -394,7 +392,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             ))}</div>}
           </div>
 
-          {/* ANPASSUNG 4: Button Text bei der letzten Frage */}
           {(q.type !== 'buzzer' || room.status === 'revealed') && (
             <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
               {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
@@ -412,7 +409,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         </div>
       </div>
 
-      {/* ANPASSUNG 6: Permanenter Raum-Code unten rechts für den Host */}
       <div className="fixed bottom-6 right-6 bg-white px-6 py-3 rounded-2xl shadow-2xl border border-sky-100 flex items-center gap-3 z-50">
         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Raum-Code</span>
         <span className="font-mono text-2xl font-bold text-[#E69F00]">{room.id}</span>
@@ -427,7 +423,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
   
   const [v, setV] = useState('');
   
-  // ANPASSUNG 1: Lösche das Textfeld aus, wenn sich die Frage ändert
   useEffect(() => {
     setV('');
   }, [room.currentQuestionIndex]);
@@ -435,12 +430,10 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
   const hasAnswered = player.currentAnswer !== null && player.currentAnswer !== undefined && player.currentAnswer !== "";
   const isLockedOut = (room.buzzerLockedOut || []).includes(player.id);
 
-  // ANPASSUNG 2: Hilfs-Variable um zu prüfen, ob die Zeit abgelaufen ist (aber noch nicht vom Host aufgelöst wurde)
   const timeIsUp = q.timer > 0 && room.timeLeft === 0 && room.status === 'active';
 
   if (room.status === 'lobby') return <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700"><h2 className="text-2xl font-bold">Team {player.name}</h2><p className="mt-8 animate-pulse text-[#E69F00]">Warte auf Start...</p></div>;
   
-  // ANPASSUNG 5: Endbildschirm mit Platzierung
   if (room.status === 'finished') {
     const myRank = players.findIndex(p => p.id === player.id) + 1;
     return (
@@ -472,16 +465,13 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
       <h2 className="text-2xl font-bold leading-tight">{q.q}</h2>
       {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
       
-      {/* NORMALE EINGABE (Nur wenn Zeit noch läuft) */}
       {room.status === 'active' && !hasAnswered && !timeIsUp && (
         <div className="space-y-3 pt-4">
-          {/* ANPASSUNG 3: Hover-Effekt (bg-sky-50 / transition-colors) entfernt, stattdessen active:bg-sky-50 */}
           {q.type === 'multiple' && q.options.map((o,i)=><button key={i} onClick={()=>onAnswer(i)} className="w-full bg-white p-5 rounded-2xl text-left border border-sky-100 shadow-sm font-medium active:bg-sky-50 active:scale-[0.98] transition-all">{o}</button>)}
           {(q.type === 'text' || q.type === 'estimation') && <div className="space-y-4"><input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-5 rounded-2xl border border-sky-100 outline-none focus:border-[#E69F00]" value={v} onChange={e=>setV(e.target.value)} placeholder="Antwort..."/><button onClick={()=>onAnswer(v)} disabled={!v} className="w-full bg-[#E69F00] text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">Abschicken</button></div>}
         </div>
       )}
 
-      {/* ANPASSUNG 2: Wenn Zeit abgelaufen ist */}
       {room.status === 'active' && !hasAnswered && timeIsUp && (
         <div className="text-center py-12 bg-white rounded-3xl border border-sky-100 shadow-inner text-red-500 font-bold text-lg flex flex-col items-center gap-2">
            <Clock size={32}/> Zeit abgelaufen!
@@ -491,7 +481,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
       
       {hasAnswered && room.status === 'active' && <div className="text-center py-12 bg-white rounded-3xl border border-sky-100 shadow-inner text-[#E69F00] font-bold text-lg flex flex-col items-center gap-2"><CheckCircle size={32}/> Antwort eingeloggt!</div>}
       
-      {/* Wartebildschirm für Freitext-Korrektur */}
       {room.status === 'revealed' && q.type === 'text' && !player.corrected && (
           <div className="py-12 rounded-3xl border-2 text-center bg-slate-50 border-sky-100 text-slate-400 shadow-inner animate-pulse">
              <h3 className="text-xl font-bold">Quizmaster wertet aus...</h3>
