@@ -21,13 +21,11 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 // --- HELFER: TEAM BERECHNUNG ---
-// Diese Funktion berechnet live die Team-Punkte (Einzelpunkte kumuliert + spezifische Team-Schätzpunkte)
 const getSortedTeams = (players, room) => {
   if (!room || !players) return [];
   const teamsMap = {};
   
   players.forEach(p => {
-      // Wer kein Team hat, ist ein 1-Mann-Team unter seinem eigenen Namen
       const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
       if (!teamsMap[tId]) {
           teamsMap[tId] = { 
@@ -41,7 +39,6 @@ const getSortedTeams = (players, room) => {
       teamsMap[tId].playerScoreSum += p.score;
   });
 
-  // Gesamtpunktzahl = Alle Einzelpunkte der Mitglieder + Team-Punkte (aus Schätzfragen)
   Object.values(teamsMap).forEach(t => {
       t.totalScore = t.playerScoreSum + t.estimationScore;
   });
@@ -60,7 +57,11 @@ const generateRoomCode = () => {
 const downloadCSV = (players, room) => {
   const sortedTeams = getSortedTeams(players, room);
   const headers = ["Team-Platz", "Team", "Team-Punkte Gesamt", "Spieler", "Spieler-Punkte (ohne Schätzen)"];
-  room.questions.forEach((q, i) => headers.push(`F${i+1}: ${q.q.replace(/,/g, "")}`));
+  
+  // CSV Header Anpassung für Pausen
+  room.questions.forEach((q, i) => {
+      headers.push(q.type === 'break' ? `Pause: ${q.q.replace(/,/g, "")}` : `F${i+1}: ${q.q.replace(/,/g, "")}`);
+  });
   
   const rows = players.map(p => {
     const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
@@ -70,21 +71,22 @@ const downloadCSV = (players, room) => {
     const row = [teamRank, tId, myTeam.totalScore, p.name, p.score];
     room.questions.forEach((q, qi) => {
       const a = p.answers?.[qi];
-      if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
+      if (q.type === 'break') row.push("---");
+      else if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
       else if (q.type === 'buzzer') row.push(a ? "Gebuzzert & Richtig" : "---");
       else row.push(a?.toString().replace(/,/g, "") || "---");
     });
     return row;
   });
 
-  // Nach Team-Platz sortieren
   rows.sort((a, b) => a[0] - b[0]);
 
   const csv = "\uFEFF" + [headers, ...rows].map(e => e.join(",")).join("\n");
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = `Quizkopp_Export_${room.id}.csv`; a.click();
+  a.href = url;
+  a.download = `Quizkopp_Export_${room.id}.csv`; a.click();
 };
 
 // --- HAUPT-APP ---
@@ -97,7 +99,7 @@ export default function App() {
   const [currentRoomCode, setCurrentRoomCode] = useState('');
   const [adminAuth, setAdminAuth] = useState(false);
   
-  const [editingQuiz, setEditingQuiz] = useState(null); 
+  const [editingQuiz, setEditingQuiz] = useState(null);
 
   useEffect(() => {
     signInAnonymously(auth);
@@ -192,17 +194,13 @@ export default function App() {
           if (diff < minDiff) minDiff = diff;
         }
         
-        // Gewinner-Teams identifizieren
         const winningTeams = Object.keys(teamDiffs).filter(tId => teamDiffs[tId] === minDiff);
-        
-        // NEU: Team-Punkt vergeben (Speichern im Room-Objekt)
         const newTeamScores = { ...(activeRoom.teamScores || {}) };
         winningTeams.forEach(tId => {
             newTeamScores[tId] = (newTeamScores[tId] || 0) + 1;
         });
         batch.update(doc(db, 'rooms', currentRoomCode), { teamScores: newTeamScores });
 
-        // Spieler bekommen KEINEN Einzelpunkt, aber das "wasCorrect" Signal für den Richtig-Screen
         for (const p of players) {
           const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
           const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
@@ -247,7 +245,6 @@ export default function App() {
             const last = activeRoom.currentQuestionIndex >= activeRoom.questions.length -1;
             const nextIdx = activeRoom.currentQuestionIndex + 1;
             const batch = writeBatch(db);
-            
             for(const p of players) {
               batch.update(doc(db,'players',p.id),{currentAnswer:null,corrected:false, wasCorrect:null});
             }
@@ -394,34 +391,46 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
       {qs.map((q,i) => (
         <div key={i} className="bg-white p-6 rounded-3xl border border-sky-100 shadow-md space-y-4">
           <div className="flex gap-4">
-            <input placeholder="Frage..." className="flex-1 bg-slate-50 p-2 rounded border border-sky-50" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
-            <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.type} onChange={e=>update(i,'type',e.target.value)}>
-              <option value="multiple">Multiple Choice</option><option value="text">Freitext</option><option value="estimation">Schätzung</option><option value="buzzer">Buzzer-Frage</option>
-            </select>
-            <button onClick={() => removeQ(i)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Frage löschen"><Trash2 size={20}/></button>
-          </div>
-          <div className="flex gap-4 items-center flex-wrap">
-            <input placeholder="Bild-URL (optional)" className="flex-1 min-w-[200px] bg-slate-50 p-2 rounded border border-sky-50 text-xs" value={q.imgUrl} onChange={e=>update(i,'imgUrl',e.target.value)}/>
-            <div className="flex items-center gap-2 text-xs text-slate-400"><label>Auf Handy?</label><input type="checkbox" checked={q.showImg} onChange={e=>update(i,'showImg',e.target.checked)}/></div>
+            {/* ANPASSUNG: Platzhalter-Text für Pausen geändert */}
+            <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : "Frage..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
             
-            {q.type !== 'text' && q.type !== 'buzzer' && (
-                <div className="flex items-center gap-2 text-xs text-slate-400 border-l border-sky-100 pl-4 ml-2">
-                    <label>Antworten auf Beamer zeigen?</label>
-                    <input type="checkbox" checked={q.showAnswers !== false} onChange={e=>update(i,'showAnswers',e.target.checked)}/>
-                </div>
-            )}
-
-            {q.type !== 'buzzer' && (
-              <div className="flex items-center gap-2 ml-auto">
-                <Clock size={16} className="text-[#E69F00]"/><input type="number" min="0" className="w-16 bg-slate-50 p-2 rounded border border-sky-50" value={q.timer} onChange={e=>update(i,'timer',parseInt(e.target.value) || 0)}/>
-              </div>
-            )}
+            <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.type} onChange={e=>update(i,'type',e.target.value)}>
+              <option value="multiple">Multiple Choice</option>
+              <option value="text">Freitext</option>
+              <option value="estimation">Schätzung</option>
+              <option value="buzzer">Buzzer-Frage</option>
+              <option value="break">⏸️ Pause / Zwischenstand</option>
+            </select>
+            
+            <button onClick={() => removeQ(i)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Löschen"><Trash2 size={20}/></button>
           </div>
+          
+          {/* ANPASSUNG: Verstecke die gesamten Input-Felder, wenn es nur eine Pause ist */}
+          {q.type !== 'break' && (
+            <div className="flex gap-4 items-center flex-wrap">
+              <input placeholder="Bild-URL (optional)" className="flex-1 min-w-[200px] bg-slate-50 p-2 rounded border border-sky-50 text-xs" value={q.imgUrl} onChange={e=>update(i,'imgUrl',e.target.value)}/>
+              <div className="flex items-center gap-2 text-xs text-slate-400"><label>Auf Handy?</label><input type="checkbox" checked={q.showImg} onChange={e=>update(i,'showImg',e.target.checked)}/></div>
+              
+              {q.type !== 'text' && q.type !== 'buzzer' && (
+                  <div className="flex items-center gap-2 text-xs text-slate-400 border-l border-sky-100 pl-4 ml-2">
+                      <label>Antworten auf Beamer zeigen?</label>
+                      <input type="checkbox" checked={q.showAnswers !== false} onChange={e=>update(i,'showAnswers',e.target.checked)}/>
+                  </div>
+              )}
+
+              {q.type !== 'buzzer' && (
+                <div className="flex items-center gap-2 ml-auto">
+                  <Clock size={16} className="text-[#E69F00]"/><input type="number" min="0" className="w-16 bg-slate-50 p-2 rounded border border-sky-50" value={q.timer} onChange={e=>update(i,'timer',parseInt(e.target.value) || 0)}/>
+                </div>
+              )}
+            </div>
+          )}
+          
           {q.type==='multiple' && <div className="grid grid-cols-2 gap-2">{q.options.map((o,oi)=>(
             <div key={oi} className={`flex gap-2 p-2 rounded border ${q.correctIndex == oi ? 'border-emerald-200 bg-emerald-50' : 'bg-slate-50 border-sky-50'}`}><input type="radio" checked={q.correctIndex==oi} onChange={()=>update(i,'correctIndex',oi)}/><input className="bg-transparent w-full text-slate-700" value={o} onChange={e=>{const no=[...q.options];no[oi]=e.target.value;update(i,'options',no)}}/></div>
           ))}</div>}
           
-          {q.type !== 'multiple' && (
+          {q.type !== 'multiple' && q.type !== 'break' && (
             <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.correctValue} onChange={e=>update(i,'correctValue',e.target.value)} placeholder={q.type === 'estimation' ? "Korrekte Zahl..." : "Korrekte Lösung (für dich zur Info)..."} />
           )}
         </div>
@@ -509,6 +518,32 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     </div>
   );
 
+  // --- NEU: DER PAUSEN-BILDSCHIRM FÜR DEN HOST ---
+  if (q.type === 'break') {
+    return (
+      <div className="space-y-8 max-w-4xl mx-auto py-10 text-slate-700 relative h-full">
+        <h2 className="text-center text-5xl text-[#E69F00] font-bold mb-12">⏸️ {q.q || 'Zwischenstand'}</h2>
+        
+        <div className="bg-white p-8 rounded-3xl border border-sky-100 shadow-xl mb-8">
+            <h3 className="text-2xl font-bold mb-6 text-slate-600 text-center">Aktuelles Ranking</h3>
+            <div className="space-y-4">
+              {sortedTeams.map((t, i) => (
+                <div key={t.name} className={`flex justify-between items-center p-4 rounded-xl border ${i===0 ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-sky-50'}`}>
+                  <span className="text-2xl font-bold text-slate-700">{i+1}. {t.name}</span>
+                  <span className="font-mono text-3xl font-bold text-[#E69F00]">{t.totalScore}</span>
+                </div>
+              ))}
+            </div>
+        </div>
+
+        {/* Hier rufen wir direkt onNext auf, weil eine Pause nicht 'aufgelöst' werden muss */}
+        <button onClick={onNext} className="w-full bg-emerald-500 text-white px-8 py-6 rounded-3xl text-3xl font-bold shadow-xl hover:scale-[1.02] transition-all">
+          {isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Runde starten'}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="grid lg:grid-cols-4 gap-8 h-full">
@@ -575,7 +610,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
           {(q.type !== 'buzzer' || room.status === 'revealed') && (
             <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
-              {room.status === 'active' ? 'Lösung' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
+              {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
         </div>
@@ -635,6 +670,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
   
   const hasAnswered = player.currentAnswer !== null && player.currentAnswer !== undefined && player.currentAnswer !== "";
   const isLockedOut = (room.buzzerLockedOut || []).includes(player.id);
+
   const timeIsUp = q.timer > 0 && room.timeLeft === 0 && room.status === 'active';
 
   const handleBuzzClick = () => {
@@ -673,6 +709,29 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
     );
   }
   
+  // --- NEU: DER PAUSEN-BILDSCHIRM FÜR SPIELER ---
+  if (q.type === 'break') {
+    const myTeamId = player.team && player.team.trim() !== "" ? player.team.trim() : player.name;
+    const myTeam = sortedTeams.find(t => t.name === myTeamId);
+    const myRank = sortedTeams.findIndex(t => t.name === myTeamId) + 1;
+    
+    return (
+      <div className="text-center py-16 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-md mx-auto text-slate-700">
+        <h2 className="text-3xl font-bold mb-6 text-[#E69F00]">⏸️ {q.q || 'Pause'}</h2>
+        <p className="mb-8 text-lg font-medium text-slate-500 px-6">Zeit zum Durchatmen! Schau auf den Beamer für den aktuellen Zwischenstand.</p>
+        
+        <div className="bg-sky-50 py-6 px-4 mx-6 rounded-2xl border border-sky-100 mb-6">
+            <p className="text-sm text-slate-400 font-bold uppercase tracking-widest mb-1">Eure Team-Punkte</p>
+            <div className="text-5xl font-bold text-[#E69F00]">{myTeam?.totalScore || 0}</div>
+        </div>
+
+        <div className="text-lg font-bold text-sky-600 bg-white inline-block px-6 py-2 rounded-full border border-sky-200">
+            Aktueller Platz: {myRank}
+        </div>
+      </div>
+    );
+  }
+
   if (q.type === 'buzzer') {
     return (
       <div className="max-w-md mx-auto space-y-6 text-center text-slate-700">
@@ -723,7 +782,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
       
       {room.status === 'revealed' && (q.type !== 'text' || player.corrected) && typeof player.wasCorrect === 'boolean' && (
          <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
-             <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für dich!':'Leider kein Punkt.'}</h3>
+             <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für euch!':'Leider kein Punkt.'}</h3>
              {q.type === 'estimation' && <p className="mt-2 text-sm text-slate-600 font-bold bg-white inline-block px-4 py-1 rounded-full border border-slate-200">Lösung: {q.correctValue}</p>}
          </div>
       )}
