@@ -20,7 +20,36 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// --- HELFER ---
+// --- HELFER: TEAM BERECHNUNG ---
+// Diese Funktion berechnet live die Team-Punkte (Einzelpunkte kumuliert + spezifische Team-Schätzpunkte)
+const getSortedTeams = (players, room) => {
+  if (!room || !players) return [];
+  const teamsMap = {};
+  
+  players.forEach(p => {
+      // Wer kein Team hat, ist ein 1-Mann-Team unter seinem eigenen Namen
+      const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
+      if (!teamsMap[tId]) {
+          teamsMap[tId] = { 
+              name: tId, 
+              players: [], 
+              playerScoreSum: 0, 
+              estimationScore: room.teamScores?.[tId] || 0 
+          };
+      }
+      teamsMap[tId].players.push(p);
+      teamsMap[tId].playerScoreSum += p.score;
+  });
+
+  // Gesamtpunktzahl = Alle Einzelpunkte der Mitglieder + Team-Punkte (aus Schätzfragen)
+  Object.values(teamsMap).forEach(t => {
+      t.totalScore = t.playerScoreSum + t.estimationScore;
+  });
+
+  return Object.values(teamsMap).sort((a,b) => b.totalScore - a.totalScore);
+};
+
+// --- HELFER: WEITERE ---
 const generateRoomCode = () => {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let res = '';
@@ -29,11 +58,16 @@ const generateRoomCode = () => {
 };
 
 const downloadCSV = (players, room) => {
-  const headers = ["Platz", "Name", "Team", "Gesamtpunkte"];
+  const sortedTeams = getSortedTeams(players, room);
+  const headers = ["Team-Platz", "Team", "Team-Punkte Gesamt", "Spieler", "Spieler-Punkte (ohne Schätzen)"];
   room.questions.forEach((q, i) => headers.push(`F${i+1}: ${q.q.replace(/,/g, "")}`));
   
-  const rows = players.map((p, i) => {
-    const row = [i + 1, p.name, p.team || "-", p.score];
+  const rows = players.map(p => {
+    const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
+    const myTeam = sortedTeams.find(t => t.name === tId);
+    const teamRank = sortedTeams.findIndex(t => t.name === tId) + 1;
+
+    const row = [teamRank, tId, myTeam.totalScore, p.name, p.score];
     room.questions.forEach((q, qi) => {
       const a = p.answers?.[qi];
       if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
@@ -42,6 +76,9 @@ const downloadCSV = (players, room) => {
     });
     return row;
   });
+
+  // Nach Team-Platz sortieren
+  rows.sort((a, b) => a[0] - b[0]);
 
   const csv = "\uFEFF" + [headers, ...rows].map(e => e.join(",")).join("\n");
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -93,7 +130,7 @@ export default function App() {
     const code = generateRoomCode();
     await setDoc(doc(db, 'rooms', code), {
       hostId: user.uid, status: 'lobby', currentQuestionIndex: 0, questions,
-      timeLeft: questions[0].timer || 0, buzzerWinner: null, buzzerLockedOut: [], createdAt: Date.now()
+      timeLeft: questions[0].timer || 0, buzzerWinner: null, buzzerLockedOut: [], teamScores: {}, createdAt: Date.now()
     });
     setCurrentRoomCode(code); setRole('host');
   };
@@ -141,7 +178,7 @@ export default function App() {
         const target = parseFloat(q.correctValue);
         const teams = {};
         for (const p of validPlayers) {
-          const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.id;
+          const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
           if (!teams[tId]) teams[tId] = { sum: 0, count: 0 };
           teams[tId].sum += parseFloat(p.currentAnswer);
           teams[tId].count++;
@@ -154,11 +191,23 @@ export default function App() {
           teamDiffs[tId] = diff;
           if (diff < minDiff) minDiff = diff;
         }
+        
+        // Gewinner-Teams identifizieren
+        const winningTeams = Object.keys(teamDiffs).filter(tId => teamDiffs[tId] === minDiff);
+        
+        // NEU: Team-Punkt vergeben (Speichern im Room-Objekt)
+        const newTeamScores = { ...(activeRoom.teamScores || {}) };
+        winningTeams.forEach(tId => {
+            newTeamScores[tId] = (newTeamScores[tId] || 0) + 1;
+        });
+        batch.update(doc(db, 'rooms', currentRoomCode), { teamScores: newTeamScores });
+
+        // Spieler bekommen KEINEN Einzelpunkt, aber das "wasCorrect" Signal für den Richtig-Screen
         for (const p of players) {
           const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
-          const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.id;
-          const isCorrect = hasAnswered && (teamDiffs[tId] === minDiff);
-          batch.update(doc(db, 'players', p.id), { score: isCorrect ? p.score + 1 : p.score, wasCorrect: isCorrect });
+          const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
+          const isCorrect = hasAnswered && winningTeams.includes(tId);
+          batch.update(doc(db, 'players', p.id), { wasCorrect: isCorrect });
         }
       } else {
          for (const p of players) batch.update(doc(db, 'players', p.id), { wasCorrect: false });
@@ -174,7 +223,7 @@ export default function App() {
     <div className="min-h-screen bg-[#F0F9FF] text-[#1E293B] font-sans">
       <header className="bg-white border-b border-sky-100 p-4 sticky top-0 z-10 shadow-sm">
         <div className={role === 'host' ? "w-full max-w-[1920px] mx-auto px-4 flex justify-between items-center" : "max-w-4xl mx-auto flex justify-between items-center"}>
-          <div className="flex items-center gap-2"><Trophy className="text-[#E69F00]"/><h1 className="text-xl font-bold italic">Der Quizkopp Master</h1></div>
+          <div className="flex items-center gap-2"><Trophy className="text-[#E69F00]"/><h1 className="text-xl font-bold italic">Die Quizkopp App</h1></div>
           {role && <button onClick={() => { if(role==='host') deleteDoc(doc(db,'rooms',currentRoomCode)); setRole(null); setCurrentRoomCode(''); }} className="text-slate-400 hover:text-red-500 transition-colors"><LogOut size={20}/></button>}
         </div>
       </header>
@@ -245,7 +294,7 @@ function LoginView({ allPlayers, onJoin, onAdmin }) {
         <input placeholder="DEIN NAME" className="w-full bg-slate-50 p-4 rounded-xl border border-sky-100 outline-none focus:border-[#E69F00]" value={n} onChange={e=>setN(e.target.value)}/>
         
         <div className="space-y-2">
-            <input placeholder="NEUES TEAM ODER UNTEN WÄHLEN" className="w-full bg-slate-50 p-4 rounded-xl border border-sky-100 outline-none focus:border-[#E69F00]" value={t} onChange={e=>setT(e.target.value)}/>
+            <input placeholder="NEUES TEAM (Optional)" className="w-full bg-slate-50 p-4 rounded-xl border border-sky-100 outline-none focus:border-[#E69F00]" value={t} onChange={e=>setT(e.target.value)}/>
             {c.length === 4 && existingTeams.length > 0 && (
                 <div className="flex flex-wrap gap-2 pt-2 justify-center">
                     <span className="text-xs text-slate-400 w-full mb-1">...oder bestehendem Team beitreten:</span>
@@ -309,7 +358,6 @@ function Library({ onSelect, onEdit, onBack, db }) {
 }
 
 function HostSetup({ onCreate, onBack, db, initialQuiz }) {
-  // NEU: showAnswers standardmäßig true
   const [title, setTitle] = useState(initialQuiz ? initialQuiz.title : '');
   const [qs, setQs] = useState(initialQuiz ? initialQuiz.questions : [{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true}]);
   
@@ -356,7 +404,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
             <input placeholder="Bild-URL (optional)" className="flex-1 min-w-[200px] bg-slate-50 p-2 rounded border border-sky-50 text-xs" value={q.imgUrl} onChange={e=>update(i,'imgUrl',e.target.value)}/>
             <div className="flex items-center gap-2 text-xs text-slate-400"><label>Auf Handy?</label><input type="checkbox" checked={q.showImg} onChange={e=>update(i,'showImg',e.target.checked)}/></div>
             
-            {/* NEU: Option um Antworten auf dem Beamer zu zeigen */}
             {q.type !== 'text' && q.type !== 'buzzer' && (
                 <div className="flex items-center gap-2 text-xs text-slate-400 border-l border-sky-100 pl-4 ml-2">
                     <label>Antworten auf Beamer zeigen?</label>
@@ -380,7 +427,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         </div>
       ))}
       <div className="flex gap-4">
-        {/* Neue Fragen bekommen showAnswers: true als Standard */}
         <button onClick={()=>setQs([...qs,{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true}])} className="flex-1 bg-white py-3 rounded-2xl border border-sky-100 font-bold shadow-sm text-slate-500">+ Frage hinzufügen</button>
         <button onClick={()=>onCreate(qs)} className="flex-1 bg-emerald-500 text-white py-3 rounded-2xl font-bold shadow-lg">Quiz starten</button>
       </div>
@@ -391,8 +437,8 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
 function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCorrect }) {
   const q = room.questions[room.currentQuestionIndex];
   const isLastQuestion = room.currentQuestionIndex >= room.questions.length - 1;
+  const sortedTeams = getSortedTeams(players, room);
 
-  // HILFSFUNKTION: Schätz-Ergebnisse wunderschön darstellen
   const renderEstimationAnswers = () => {
     const answeredPlayers = players.filter(p => p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "");
     if (answeredPlayers.length === 0) return null;
@@ -404,7 +450,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         teams[tId].members.push(p);
         teams[tId].sum += parseFloat(p.currentAnswer);
         teams[tId].count++;
-        if (p.wasCorrect) teams[tId].isWinner = true; // Wenn einer aus dem Team den Punkt hat, leuchtet das ganze Team
+        if (p.wasCorrect) teams[tId].isWinner = true; 
     });
 
     return (
@@ -439,7 +485,9 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
       <p className="text-3xl text-slate-400 uppercase tracking-widest font-bold">Raum-Code</p>
       <h2 className="text-[10rem] leading-none font-mono font-bold text-[#E69F00] tracking-widest">{room.id}</h2>
       <div className="bg-white p-8 rounded-3xl border border-sky-100 max-w-4xl mx-auto shadow-xl">
-        <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700"><Users size={36}/> Teilnehmer ({players.length})</h3>
+        <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700">
+            <Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})
+        </h3>
         <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">{p.name} {p.team && <span className="text-sm font-normal text-slate-400 ml-1">({p.team})</span>}</span>)}</div>
       </div>
       <button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-500 text-white px-24 py-8 rounded-full text-4xl font-bold shadow-xl transition-all mt-10">Quiz starten!</button>
@@ -448,10 +496,13 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   if (room.status === 'finished') return (
     <div className="space-y-8 max-w-4xl mx-auto py-10 text-slate-700 relative h-full">
       <h2 className="text-center text-6xl text-[#E69F00] font-bold mb-12">🏆 Endstand</h2>
-      {players.map((p,i)=>(
-        <div key={p.id} className={`p-8 rounded-3xl flex justify-between items-center border ${i===0?'bg-yellow-50 border-[#E69F00] shadow-md':'bg-white border-sky-50 shadow-sm'}`}>
-          <div><span className="text-3xl font-bold block">{i+1}. {p.name}</span>{p.team && <span className="text-lg text-slate-400">Team: {p.team}</span>}</div>
-          <span className="font-mono text-4xl bg-slate-50 px-6 py-2 rounded-xl text-[#E69F00]">{p.score}</span>
+      {sortedTeams.map((t,i)=>(
+        <div key={t.name} className={`p-8 rounded-3xl flex justify-between items-center border ${i===0?'bg-yellow-50 border-[#E69F00] shadow-md':'bg-white border-sky-50 shadow-sm'}`}>
+          <div>
+              <span className="text-3xl font-bold block">{i+1}. {t.name}</span>
+              <span className="text-sm text-slate-400">{t.players.map(p => p.name).join(", ")}</span>
+          </div>
+          <span className="font-mono text-4xl bg-slate-50 px-6 py-2 rounded-xl text-[#E69F00]">{t.totalScore}</span>
         </div>
       ))}
       <button onClick={()=>downloadCSV(players,room)} className="w-full bg-white border border-sky-100 py-6 rounded-3xl flex items-center justify-center gap-4 text-2xl font-bold mt-12 shadow-md text-slate-700"><Download size={32}/> Excel-Export (CSV)</button>
@@ -475,7 +526,13 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               <div className="bg-red-50 border-2 border-red-500 p-12 rounded-3xl text-center shadow-2xl animate-pulse mt-auto">
                 <p className="text-red-500 font-bold text-xl mb-4 uppercase tracking-widest">Schnellster Buzzer:</p>
                 <h3 className="text-6xl md:text-7xl font-black text-slate-800 mb-2">{room.buzzerWinnerName}</h3>
-                {room.buzzerReaction && <p className="text-2xl font-bold text-red-500 mb-8 flex items-center justify-center gap-2"><Clock size={24}/> {(room.buzzerReaction / 1000).toFixed(2)} Sekunden</p>}
+                
+                {room.buzzerReaction && (
+                    <p className="text-2xl font-bold text-red-500 mb-8 flex items-center justify-center gap-2">
+                        <Clock size={24}/> {(room.buzzerReaction / 1000).toFixed(2)} Sekunden
+                    </p>
+                )}
+
                 <div className="flex gap-6 justify-center">
                   <button onClick={()=>onBuzzerCorrect(false)} className="bg-white border border-red-200 text-red-500 hover:bg-red-500 hover:text-white px-8 py-5 rounded-2xl font-bold text-xl flex items-center gap-3 transition-colors"><XCircle size={28}/> Falsch</button>
                   <button onClick={()=>onBuzzerCorrect(true)} className="bg-emerald-500 text-white px-8 py-5 rounded-2xl font-bold text-xl flex items-center gap-3"><CheckCircle size={28}/> Richtig</button>
@@ -484,13 +541,14 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             )}
 
             {room.status === 'revealed' && q.type !== 'buzzer' && (
-              <div className="bg-emerald-50 border border-emerald-500/50 p-8 rounded-2xl mt-auto">
+              <div className="bg-emerald-50 border border-emerald-500/50 p-8 rounded-2xl mb-6 mt-auto">
                 <p className="text-emerald-500 font-bold uppercase tracking-widest mb-2">Korrekte Lösung</p>
-                <p className="text-4xl font-bold">{q.type === 'multiple' ? q.options[q.correctIndex] : q.correctValue || "Manuelle Auswertung"}</p>
+                <p className="text-4xl font-bold">
+                  {q.type === 'multiple' ? q.options[q.correctIndex] : q.correctValue || "Manuelle Auswertung"}
+                </p>
               </div>
             )}
             
-            {/* NEU: MULTIPLE CHOICE ÜBERSICHT (Wenn aktiviert) */}
             {room.status === 'revealed' && q.type === 'multiple' && q.showAnswers !== false && (
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mt-8 border-t border-sky-100 pt-8">
                     <div className="col-span-full"><h3 className="text-xl font-bold text-slate-600 mb-2">Wer hat was getippt?</h3></div>
@@ -503,10 +561,8 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                 </div>
             )}
 
-            {/* NEU: DIE WUNDERSCHÖNE SCHÄTZ-ÜBERSICHT (Wenn aktiviert) */}
             {room.status === 'revealed' && q.type === 'estimation' && q.showAnswers !== false && renderEstimationAnswers()}
             
-            {/* Freitext-Korrektur (Immer an) */}
             {room.status === 'revealed' && q.type === 'text' && <div className="space-y-4 mt-8 border-t border-sky-100 pt-8">
               <h3 className="text-xl font-bold text-slate-600 mb-4">Antworten bewerten</h3>
               {players.map(p=>(
@@ -519,21 +575,40 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
           {(q.type !== 'buzzer' || room.status === 'revealed') && (
             <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
-              {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
+              {room.status === 'active' ? 'Lösung' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
         </div>
         <div className="bg-white p-8 rounded-3xl border border-sky-100 h-fit sticky top-24 shadow-xl">
-          <h3 className="text-2xl font-bold mb-8 uppercase tracking-widest text-slate-300">Ranking</h3>
-          <div className="space-y-4">{players.map((p, index)=>(
-              <div key={p.id} className="flex justify-between text-lg items-center bg-slate-50 p-4 rounded-xl border border-sky-50 shadow-sm">
-                <span className="font-bold flex items-center gap-3 text-slate-700">
-                    <span className="text-slate-400 text-sm">{index + 1}.</span> 
-                    <div>{p.name} {p.team && <div className="text-xs font-normal text-slate-400">{p.team}</div>}</div>
-                </span>
-                <div className="flex items-center gap-4">{((p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "") || p.id === room.buzzerWinner) ? <CheckCircle size={20} className="text-emerald-500"/> : <div className="w-3 h-3 rounded-full bg-slate-200 animate-pulse mt-1"/>}<span className="font-mono font-bold bg-white px-3 py-1 rounded-lg border border-sky-50 text-[#E69F00] shadow-inner">{p.score}</span></div>
-              </div>
-            ))}</div>
+          <h3 className="text-2xl font-bold mb-8 uppercase tracking-widest text-slate-300">Team Ranking</h3>
+          <div className="space-y-4">
+              {sortedTeams.map((t, index) => (
+                <div key={t.name} className="bg-slate-50 rounded-xl border border-sky-50 shadow-sm overflow-hidden">
+                  <div className="flex justify-between items-center p-4 bg-sky-50/50">
+                    <span className="font-bold flex items-center gap-3 text-slate-700">
+                      <span className="text-slate-400 text-sm">{index + 1}.</span>
+                      {t.name}
+                    </span>
+                    <span className="font-mono font-bold bg-white px-3 py-1 rounded-lg border border-sky-100 text-[#E69F00] shadow-inner">
+                      {t.totalScore}
+                    </span>
+                  </div>
+                  {t.players.length > 0 && (
+                    <div className="px-4 py-2 bg-white space-y-2 border-t border-sky-50">
+                      {t.players.map(p => (
+                        <div key={p.id} className="flex justify-between text-sm items-center">
+                          <span className="text-slate-500 pl-6">{p.name}</span>
+                          <div className="flex items-center gap-4">
+                             {((p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "") || p.id === room.buzzerWinner) ? <CheckCircle size={14} className="text-emerald-500"/> : <div className="w-2 h-2 rounded-full bg-slate-200 animate-pulse mt-1"/>}
+                             <span className="font-mono text-xs text-slate-400">{p.score}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+          </div>
         </div>
       </div>
 
@@ -551,6 +626,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
   
   const [v, setV] = useState('');
   const [qStartTime, setQStartTime] = useState(Date.now());
+  const sortedTeams = getSortedTeams(players, room);
   
   useEffect(() => {
     setV('');
@@ -559,7 +635,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
   
   const hasAnswered = player.currentAnswer !== null && player.currentAnswer !== undefined && player.currentAnswer !== "";
   const isLockedOut = (room.buzzerLockedOut || []).includes(player.id);
-
   const timeIsUp = q.timer > 0 && room.timeLeft === 0 && room.status === 'active';
 
   const handleBuzzClick = () => {
@@ -574,13 +649,26 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
   if (room.status === 'lobby') return <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700"><h2 className="text-2xl font-bold">Hallo {player.name}!</h2><p className="mt-8 animate-pulse text-[#E69F00]">Warte auf Start...</p></div>;
   
   if (room.status === 'finished') {
-    const myRank = players.findIndex(p => p.id === player.id) + 1;
+    const myTeamId = player.team && player.team.trim() !== "" ? player.team.trim() : player.name;
+    const myTeam = sortedTeams.find(t => t.name === myTeamId);
+    const myRank = sortedTeams.findIndex(t => t.name === myTeamId) + 1;
+    
     return (
       <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700">
         <Trophy size={64} className="mx-auto text-[#E69F00] mb-6"/>
         <h2 className="text-2xl font-bold mb-2">Quiz beendet!</h2>
-        <div className="text-6xl font-bold mb-2">{player.score} <span className="text-2xl text-slate-400">Pkt.</span></div>
-        <div className="text-xl font-bold text-emerald-500 bg-emerald-50 inline-block px-4 py-2 rounded-full border border-emerald-100 mt-4">Dein Platz: {myRank}</div>
+        
+        <div className="mt-6 mb-8">
+            <p className="text-sm text-slate-400 font-bold uppercase tracking-widest mb-2">Team-Punkte</p>
+            <div className="text-6xl font-bold text-[#E69F00]">{myTeam?.totalScore || 0}</div>
+        </div>
+
+        <div className="text-xl font-bold text-emerald-500 bg-emerald-50 inline-block px-6 py-3 rounded-full border border-emerald-100 mb-6">Dein Team-Platz: {myRank}</div>
+        
+        <div className="border-t border-sky-50 pt-6">
+            <p className="text-sm text-slate-400">Deine persönlichen Punkte</p>
+            <p className="text-2xl font-bold text-slate-600">{player.score}</p>
+        </div>
       </div>
     );
   }
@@ -588,7 +676,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
   if (q.type === 'buzzer') {
     return (
       <div className="max-w-md mx-auto space-y-6 text-center text-slate-700">
-        <div className="flex justify-between text-xs font-bold text-slate-400 uppercase tracking-widest mb-6"><span>Frage {room.currentQuestionIndex+1}</span><span className="text-[#E69F00]">Score: {player.score}</span></div>
+        <div className="flex justify-between text-xs font-bold text-slate-400 uppercase tracking-widest mb-6"><span>Frage {room.currentQuestionIndex+1}</span><span className="text-[#E69F00]">Persönliche Punkte: {player.score}</span></div>
         {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-40 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 mb-6"/>}
         <h2 className="text-2xl font-bold mb-10">{q.q}</h2>
         
@@ -635,7 +723,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
       
       {room.status === 'revealed' && (q.type !== 'text' || player.corrected) && typeof player.wasCorrect === 'boolean' && (
          <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
-             <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für euch!':'Leider kein Punkt.'}</h3>
+             <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für dich!':'Leider kein Punkt.'}</h3>
              {q.type === 'estimation' && <p className="mt-2 text-sm text-slate-600 font-bold bg-white inline-block px-4 py-1 rounded-full border border-slate-200">Lösung: {q.correctValue}</p>}
          </div>
       )}
