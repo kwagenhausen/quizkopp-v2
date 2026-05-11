@@ -57,11 +57,7 @@ const generateRoomCode = () => {
 const downloadCSV = (players, room) => {
   const sortedTeams = getSortedTeams(players, room);
   const headers = ["Team-Platz", "Team", "Team-Punkte Gesamt", "Spieler", "Spieler-Punkte (ohne Schätzen)"];
-  
-  // CSV Header Anpassung für Pausen
-  room.questions.forEach((q, i) => {
-      headers.push(q.type === 'break' ? `Pause: ${q.q.replace(/,/g, "")}` : `F${i+1}: ${q.q.replace(/,/g, "")}`);
-  });
+  room.questions.forEach((q, i) => headers.push(`F${i+1}: ${q.q.replace(/,/g, "")}`));
   
   const rows = players.map(p => {
     const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
@@ -71,8 +67,7 @@ const downloadCSV = (players, room) => {
     const row = [teamRank, tId, myTeam.totalScore, p.name, p.score];
     room.questions.forEach((q, qi) => {
       const a = p.answers?.[qi];
-      if (q.type === 'break') row.push("---");
-      else if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
+      if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
       else if (q.type === 'buzzer') row.push(a ? "Gebuzzert & Richtig" : "---");
       else row.push(a?.toString().replace(/,/g, "") || "---");
     });
@@ -85,8 +80,7 @@ const downloadCSV = (players, room) => {
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = `Quizkopp_Export_${room.id}.csv`; a.click();
+  a.href = url; a.download = `Quizkopp_Export_${room.id}.csv`; a.click();
 };
 
 // --- HAUPT-APP ---
@@ -99,7 +93,7 @@ export default function App() {
   const [currentRoomCode, setCurrentRoomCode] = useState('');
   const [adminAuth, setAdminAuth] = useState(false);
   
-  const [editingQuiz, setEditingQuiz] = useState(null);
+  const [editingQuiz, setEditingQuiz] = useState(null); 
 
   useEffect(() => {
     signInAnonymously(auth);
@@ -142,24 +136,38 @@ export default function App() {
     await updateDoc(doc(db, 'players', pId), { score: ok ? p.score + 1 : p.score, corrected: true, wasCorrect: ok });
   };
 
+  // NEUE SUDDEN DEATH BUZZER LOGIK
   const handleBuzzerHost = async (isCorrect) => {
     const pId = activeRoom.buzzerWinner;
     const batch = writeBatch(db);
     
-    if (isCorrect) {
-      for (const player of players) {
+    const buzzingPlayer = players.find(p => p.id === pId);
+    const buzzingTeamId = buzzingPlayer && buzzingPlayer.team && buzzingPlayer.team.trim() !== "" ? buzzingPlayer.team.trim() : buzzingPlayer?.name;
+
+    for (const player of players) {
+      const playerTeamId = player.team && player.team.trim() !== "" ? player.team.trim() : player.name;
+
+      if (isCorrect) {
+        // Richtig: Nur der Spieler, der gedrückt hat, bekommt den Punkt
         const isWinner = player.id === pId;
         batch.update(doc(db, 'players', player.id), { 
             score: isWinner ? player.score + 1 : player.score, 
             wasCorrect: isWinner,
             ...(isWinner ? {[`answers.${activeRoom.currentQuestionIndex}`]: true} : {})
         });
+      } else {
+        // Falsch: ALLE ANDEREN TEAMS bekommen den Punkt
+        const isOtherTeam = playerTeamId !== buzzingTeamId;
+        batch.update(doc(db, 'players', player.id), { 
+            score: isOtherTeam ? player.score + 1 : player.score, 
+            wasCorrect: isOtherTeam,
+            ...(isOtherTeam ? {[`answers.${activeRoom.currentQuestionIndex}`]: true} : {})
+        });
       }
-      batch.update(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
-    } else {
-      const locked = activeRoom.buzzerLockedOut || [];
-      batch.update(doc(db, 'rooms', currentRoomCode), { buzzerWinner: null, buzzerLockedOut: [...locked, pId] });
     }
+    
+    // Status wird bei beiden Szenarien sofort beendet!
+    batch.update(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
     await batch.commit();
   };
 
@@ -245,6 +253,7 @@ export default function App() {
             const last = activeRoom.currentQuestionIndex >= activeRoom.questions.length -1;
             const nextIdx = activeRoom.currentQuestionIndex + 1;
             const batch = writeBatch(db);
+            
             for(const p of players) {
               batch.update(doc(db,'players',p.id),{currentAnswer:null,corrected:false, wasCorrect:null});
             }
@@ -391,7 +400,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
       {qs.map((q,i) => (
         <div key={i} className="bg-white p-6 rounded-3xl border border-sky-100 shadow-md space-y-4">
           <div className="flex gap-4">
-            {/* ANPASSUNG: Platzhalter-Text für Pausen geändert */}
             <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : "Frage..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
             
             <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.type} onChange={e=>update(i,'type',e.target.value)}>
@@ -405,7 +413,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
             <button onClick={() => removeQ(i)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Löschen"><Trash2 size={20}/></button>
           </div>
           
-          {/* ANPASSUNG: Verstecke die gesamten Input-Felder, wenn es nur eine Pause ist */}
           {q.type !== 'break' && (
             <div className="flex gap-4 items-center flex-wrap">
               <input placeholder="Bild-URL (optional)" className="flex-1 min-w-[200px] bg-slate-50 p-2 rounded border border-sky-50 text-xs" value={q.imgUrl} onChange={e=>update(i,'imgUrl',e.target.value)}/>
@@ -494,14 +501,13 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
       <p className="text-3xl text-slate-400 uppercase tracking-widest font-bold">Raum-Code</p>
       <h2 className="text-[10rem] leading-none font-mono font-bold text-[#E69F00] tracking-widest">{room.id}</h2>
       <div className="bg-white p-8 rounded-3xl border border-sky-100 max-w-4xl mx-auto shadow-xl">
-        <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700">
-            <Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})
-        </h3>
+        <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700"><Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})</h3>
         <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">{p.name} {p.team && <span className="text-sm font-normal text-slate-400 ml-1">({p.team})</span>}</span>)}</div>
       </div>
       <button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-500 text-white px-24 py-8 rounded-full text-4xl font-bold shadow-xl transition-all mt-10">Quiz starten!</button>
     </div>
   );
+  
   if (room.status === 'finished') return (
     <div className="space-y-8 max-w-4xl mx-auto py-10 text-slate-700 relative h-full">
       <h2 className="text-center text-6xl text-[#E69F00] font-bold mb-12">🏆 Endstand</h2>
@@ -518,7 +524,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     </div>
   );
 
-  // --- NEU: DER PAUSEN-BILDSCHIRM FÜR DEN HOST ---
   if (q.type === 'break') {
     return (
       <div className="space-y-8 max-w-4xl mx-auto py-10 text-slate-700 relative h-full">
@@ -536,7 +541,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             </div>
         </div>
 
-        {/* Hier rufen wir direkt onNext auf, weil eine Pause nicht 'aufgelöst' werden muss */}
         <button onClick={onNext} className="w-full bg-emerald-500 text-white px-8 py-6 rounded-3xl text-3xl font-bold shadow-xl hover:scale-[1.02] transition-all">
           {isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Runde starten'}
         </button>
@@ -610,10 +614,11 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
           {(q.type !== 'buzzer' || room.status === 'revealed') && (
             <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
-              {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
+              {room.status === 'active' ? 'Lösung' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
         </div>
+        
         <div className="bg-white p-8 rounded-3xl border border-sky-100 h-fit sticky top-24 shadow-xl">
           <h3 className="text-2xl font-bold mb-8 uppercase tracking-widest text-slate-300">Team Ranking</h3>
           <div className="space-y-4">
@@ -630,15 +635,20 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                   </div>
                   {t.players.length > 0 && (
                     <div className="px-4 py-2 bg-white space-y-2 border-t border-sky-50">
-                      {t.players.map(p => (
-                        <div key={p.id} className="flex justify-between text-sm items-center">
-                          <span className="text-slate-500 pl-6">{p.name}</span>
-                          <div className="flex items-center gap-4">
-                             {((p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "") || p.id === room.buzzerWinner) ? <CheckCircle size={14} className="text-emerald-500"/> : <div className="w-2 h-2 rounded-full bg-slate-200 animate-pulse mt-1"/>}
-                             <span className="font-mono text-xs text-slate-400">{p.score}</span>
+                      {t.players.map(p => {
+                        // SICHERHEITS-CHECK FÜR HÄKCHEN ANZEIGE
+                        const isReadyOrCorrect = room.status === 'revealed' ? p.wasCorrect === true : ((p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "") || p.id === room.buzzerWinner);
+                        
+                        return (
+                          <div key={p.id} className="flex justify-between text-sm items-center">
+                            <span className="text-slate-500 pl-6">{p.name}</span>
+                            <div className="flex items-center gap-4">
+                              {isReadyOrCorrect ? <CheckCircle size={14} className="text-emerald-500"/> : <div className="w-2 h-2 rounded-full bg-slate-200 animate-pulse mt-1"/>}
+                              <span className="font-mono text-xs text-slate-400">{p.score}</span>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -669,7 +679,9 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
   }, [room.currentQuestionIndex]);
   
   const hasAnswered = player.currentAnswer !== null && player.currentAnswer !== undefined && player.currentAnswer !== "";
-  const isLockedOut = (room.buzzerLockedOut || []).includes(player.id);
+  
+  // Da der Buzzer jetzt Sudden Death ist, gibt es kein LockedOut mehr
+  // const isLockedOut = false; 
 
   const timeIsUp = q.timer > 0 && room.timeLeft === 0 && room.status === 'active';
 
@@ -709,7 +721,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
     );
   }
   
-  // --- NEU: DER PAUSEN-BILDSCHIRM FÜR SPIELER ---
   if (q.type === 'break') {
     const myTeamId = player.team && player.team.trim() !== "" ? player.team.trim() : player.name;
     const myTeam = sortedTeams.find(t => t.name === myTeamId);
@@ -739,14 +750,21 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
         {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-40 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 mb-6"/>}
         <h2 className="text-2xl font-bold mb-10">{q.q}</h2>
         
-        {room.status === 'active' && !room.buzzerWinner && !isLockedOut && (
+        {/* Buzzer-Button wird nur gezeigt, solange niemand gedrückt hat! (Sudden Death) */}
+        {room.status === 'active' && !room.buzzerWinner && (
             <button onClick={handleBuzzClick} className="w-64 h-64 rounded-full bg-red-600 border-8 border-red-800 shadow-[0_10px_0_#7f1d1d,0_0_50px_rgba(220,38,38,0.3)] active:translate-y-[10px] active:shadow-none transition-all mx-auto flex items-center justify-center">
                 <span className="text-4xl font-black text-white">BUZZER</span>
             </button>
         )}
         
         {room.status === 'active' && room.buzzerWinner && room.buzzerWinner === player.id && <div className="py-12 bg-red-50 rounded-3xl border-2 border-red-500 animate-pulse text-3xl font-bold text-red-500">DU BIST DRAN!</div>}
-        {room.status === 'revealed' && typeof player.wasCorrect === 'boolean' && <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-slate-50 border-sky-100 text-slate-400'}`}><h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt!':'Vorbei'}</h3></div>}
+        
+        {/* Anzeige nach der Auflösung (Gilt auch für Teams, die den Abstauber-Punkt bekommen haben) */}
+        {room.status === 'revealed' && typeof player.wasCorrect === 'boolean' && (
+            <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-slate-50 border-sky-100 text-slate-400'}`}>
+                <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für euch!':'Leider kein Punkt.'}</h3>
+            </div>
+        )}
       </div>
     );
   }
