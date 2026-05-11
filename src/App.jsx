@@ -57,7 +57,10 @@ const generateRoomCode = () => {
 const downloadCSV = (players, room) => {
   const sortedTeams = getSortedTeams(players, room);
   const headers = ["Team-Platz", "Team", "Team-Punkte Gesamt", "Spieler", "Spieler-Punkte (ohne Schätzen)"];
-  room.questions.forEach((q, i) => headers.push(`F${i+1}: ${q.q.replace(/,/g, "")}`));
+  
+  room.questions.forEach((q, i) => {
+      headers.push(q.type === 'break' ? `Pause: ${q.q.replace(/,/g, "")}` : `F${i+1}: ${q.q.replace(/,/g, "")}`);
+  });
   
   const rows = players.map(p => {
     const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
@@ -67,7 +70,8 @@ const downloadCSV = (players, room) => {
     const row = [teamRank, tId, myTeam.totalScore, p.name, p.score];
     room.questions.forEach((q, qi) => {
       const a = p.answers?.[qi];
-      if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
+      if (q.type === 'break') row.push("---");
+      else if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
       else if (q.type === 'buzzer') row.push(a ? "Gebuzzert & Richtig" : "---");
       else row.push(a?.toString().replace(/,/g, "") || "---");
     });
@@ -136,7 +140,6 @@ export default function App() {
     await updateDoc(doc(db, 'players', pId), { score: ok ? p.score + 1 : p.score, corrected: true, wasCorrect: ok });
   };
 
-  // NEUE SUDDEN DEATH BUZZER LOGIK
   const handleBuzzerHost = async (isCorrect) => {
     const pId = activeRoom.buzzerWinner;
     const batch = writeBatch(db);
@@ -148,7 +151,6 @@ export default function App() {
       const playerTeamId = player.team && player.team.trim() !== "" ? player.team.trim() : player.name;
 
       if (isCorrect) {
-        // Richtig: Nur der Spieler, der gedrückt hat, bekommt den Punkt
         const isWinner = player.id === pId;
         batch.update(doc(db, 'players', player.id), { 
             score: isWinner ? player.score + 1 : player.score, 
@@ -156,7 +158,6 @@ export default function App() {
             ...(isWinner ? {[`answers.${activeRoom.currentQuestionIndex}`]: true} : {})
         });
       } else {
-        // Falsch: ALLE ANDEREN TEAMS bekommen den Punkt
         const isOtherTeam = playerTeamId !== buzzingTeamId;
         batch.update(doc(db, 'players', player.id), { 
             score: isOtherTeam ? player.score + 1 : player.score, 
@@ -166,7 +167,6 @@ export default function App() {
       }
     }
     
-    // Status wird bei beiden Szenarien sofort beendet!
     batch.update(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
     await batch.commit();
   };
@@ -236,9 +236,29 @@ export default function App() {
 
       <main className={role === 'host' ? "w-full max-w-[1920px] mx-auto p-4 lg:p-8 relative" : "max-w-4xl mx-auto p-4 py-8 relative"}>
         {!role && !adminAuth && <LoginView allPlayers={allPlayers} onJoin={async (c, n, t) => {
-            if(!allRooms.find(r=>r.id===c.toUpperCase())) return alert("Raum nicht gefunden!");
-            await setDoc(doc(db,'players',user.uid),{name:n, team:t, roomCode:c.toUpperCase(),score:0,currentAnswer:null,answers:{}});
-            setCurrentRoomCode(c.toUpperCase()); setRole('player');
+            const roomCode = c.toUpperCase();
+            const playerName = n.trim();
+            if(!allRooms.find(r=>r.id===roomCode)) return alert("Raum nicht gefunden!");
+            
+            // --- NEU: DIE RETTUNGSRING / REJOIN LOGIK ---
+            const existingPlayer = allPlayers.find(p => p.roomCode === roomCode && p.name.toLowerCase() === playerName.toLowerCase());
+            
+            if (existingPlayer) {
+                if (existingPlayer.id !== user.uid) {
+                    // Neues Gerät/Tab, aber Name existiert: Wir löschen den alten Geist und retten alle Punkte!
+                    const { id, ...oldData } = existingPlayer; // Wir filtern die alte ID heraus
+                    await deleteDoc(doc(db, 'players', existingPlayer.id));
+                    await setDoc(doc(db, 'players', user.uid), { ...oldData, team: t });
+                } else {
+                    // Selbes Gerät, nur Refreshed
+                    await updateDoc(doc(db, 'players', user.uid), { team: t });
+                }
+            } else {
+                // Ganz normaler neuer Spieler
+                await setDoc(doc(db,'players',user.uid),{name:playerName, team:t, roomCode:roomCode, score:0, currentAnswer:null, answers:{}});
+            }
+            
+            setCurrentRoomCode(roomCode); setRole('player');
         }} onAdmin={() => setAdminAuth('login')}/>}
 
         {adminAuth === 'login' && <AdminLogin onOk={pw => pw === ADMIN_PASSWORD ? setAdminAuth(true) : alert("Falsch!")} onBack={() => setAdminAuth(false)}/>}
@@ -253,7 +273,6 @@ export default function App() {
             const last = activeRoom.currentQuestionIndex >= activeRoom.questions.length -1;
             const nextIdx = activeRoom.currentQuestionIndex + 1;
             const batch = writeBatch(db);
-            
             for(const p of players) {
               batch.update(doc(db,'players',p.id),{currentAnswer:null,corrected:false, wasCorrect:null});
             }
@@ -614,7 +633,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
           {(q.type !== 'buzzer' || room.status === 'revealed') && (
             <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
-              {room.status === 'active' ? 'Lösung' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
+              {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
         </div>
@@ -636,7 +655,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                   {t.players.length > 0 && (
                     <div className="px-4 py-2 bg-white space-y-2 border-t border-sky-50">
                       {t.players.map(p => {
-                        // SICHERHEITS-CHECK FÜR HÄKCHEN ANZEIGE
                         const isReadyOrCorrect = room.status === 'revealed' ? p.wasCorrect === true : ((p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "") || p.id === room.buzzerWinner);
                         
                         return (
@@ -679,9 +697,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
   }, [room.currentQuestionIndex]);
   
   const hasAnswered = player.currentAnswer !== null && player.currentAnswer !== undefined && player.currentAnswer !== "";
-  
-  // Da der Buzzer jetzt Sudden Death ist, gibt es kein LockedOut mehr
-  // const isLockedOut = false; 
 
   const timeIsUp = q.timer > 0 && room.timeLeft === 0 && room.status === 'active';
 
@@ -750,7 +765,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
         {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-40 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 mb-6"/>}
         <h2 className="text-2xl font-bold mb-10">{q.q}</h2>
         
-        {/* Buzzer-Button wird nur gezeigt, solange niemand gedrückt hat! (Sudden Death) */}
         {room.status === 'active' && !room.buzzerWinner && (
             <button onClick={handleBuzzClick} className="w-64 h-64 rounded-full bg-red-600 border-8 border-red-800 shadow-[0_10px_0_#7f1d1d,0_0_50px_rgba(220,38,38,0.3)] active:translate-y-[10px] active:shadow-none transition-all mx-auto flex items-center justify-center">
                 <span className="text-4xl font-black text-white">BUZZER</span>
@@ -759,7 +773,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
         
         {room.status === 'active' && room.buzzerWinner && room.buzzerWinner === player.id && <div className="py-12 bg-red-50 rounded-3xl border-2 border-red-500 animate-pulse text-3xl font-bold text-red-500">DU BIST DRAN!</div>}
         
-        {/* Anzeige nach der Auflösung (Gilt auch für Teams, die den Abstauber-Punkt bekommen haben) */}
         {room.status === 'revealed' && typeof player.wasCorrect === 'boolean' && (
             <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-slate-50 border-sky-100 text-slate-400'}`}>
                 <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für euch!':'Leider kein Punkt.'}</h3>
