@@ -427,7 +427,9 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
     const reader = new FileReader();
     reader.onload = (event) => {
       const text = event.target.result;
-      const lines = text.split('\n');
+      
+      // HIER IST DER FIX: Zeilen werden nun bei \r\n (Windows), \n (Linux) UND \r (alte Macs) getrennt!
+      const lines = text.split(/\r\n|\n|\r/);
       const newQuestions = [];
 
       for (let i = 1; i < lines.length; i++) {
@@ -547,13 +549,12 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   const sortedTeams = getSortedTeams(players, room);
   
   const [showBuzzerAnswer, setShowBuzzerAnswer] = useState(false);
-  const [numTeams, setNumTeams] = useState(2); // NEU: State für Team-Würfel-Zahl
+  const [numTeams, setNumTeams] = useState(2); 
 
   useEffect(() => {
     setShowBuzzerAnswer(false);
   }, [room.currentQuestionIndex]);
 
-  // NEU: ZUFALLSGENERATOR
   const generateRandomTeams = async () => {
     if (players.length === 0) return alert("Es sind noch keine Spieler im Raum!");
     if (window.confirm(`Alle Spieler jetzt zufällig auf ${numTeams} Teams aufteilen?`)) {
@@ -619,7 +620,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700"><Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})</h3>
         <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">{p.name} {p.team && <span className="text-sm font-normal text-slate-400 ml-1">({p.team})</span>}</span>)}</div>
         
-        {/* NEU: WÜRFEL BEREICH */}
         {players.length > 0 && (
           <div className="mt-12 pt-8 border-t border-sky-100">
             <h4 className="mb-4 font-bold text-xl text-slate-500">🎲 Zufällige Teams auslosen</h4>
@@ -757,7 +757,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
           {(q.type !== 'buzzer' || room.status === 'revealed') && (
             <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
-              {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
+              {room.status === 'active' ? 'Lösung' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
         </div>
@@ -836,7 +836,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
   if (room.status === 'lobby') return (
     <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700">
       <h2 className="text-2xl font-bold">Hallo {player.name}!</h2>
-      {/* NEU: Anzeige des zugelosten Teams in der Lobby */}
       {player.team && <div className="mt-4 text-lg font-bold text-sky-600 bg-sky-50 inline-block px-6 py-2 rounded-full border border-sky-100">Dein Team: {player.team}</div>}
       <p className="mt-8 animate-pulse text-[#E69F00]">Warte auf Start...</p>
     </div>
@@ -920,6 +919,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
         {q.timer === 0 && <span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> ∞</span>}
       </div>
 
+      {/* NEUER GROSSER TIMER */}
       {q.timer > 0 && room.status === 'active' && !timeIsUp && (
         <div className="flex justify-center my-4">
            <div className={`flex items-center gap-3 px-8 py-3 rounded-full border-4 shadow-lg font-mono text-4xl font-bold transition-all duration-300 ${room.timeLeft <= 5 ? 'bg-red-50 border-red-500 text-red-600 animate-pulse scale-110' : 'bg-white border-sky-100 text-[#E69F00]'}`}>
