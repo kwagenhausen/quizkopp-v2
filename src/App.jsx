@@ -21,13 +21,11 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 // --- HELFER: TEAM BERECHNUNG ---
-// Diese Funktion berechnet live die Team-Punkte (Einzelpunkte kumuliert + spezifische Team-Schätzpunkte)
 const getSortedTeams = (players, room) => {
   if (!room || !players) return [];
   const teamsMap = {};
   
   players.forEach(p => {
-      // Wer kein Team hat, ist ein 1-Mann-Team unter seinem eigenen Namen
       const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
       if (!teamsMap[tId]) {
           teamsMap[tId] = { 
@@ -41,7 +39,6 @@ const getSortedTeams = (players, room) => {
       teamsMap[tId].playerScoreSum += p.score;
   });
 
-  // Gesamtpunktzahl = Alle Einzelpunkte der Mitglieder + Team-Punkte (aus Schätzfragen)
   Object.values(teamsMap).forEach(t => {
       t.totalScore = t.playerScoreSum + t.estimationScore;
   });
@@ -60,7 +57,10 @@ const generateRoomCode = () => {
 const downloadCSV = (players, room) => {
   const sortedTeams = getSortedTeams(players, room);
   const headers = ["Team-Platz", "Team", "Team-Punkte Gesamt", "Spieler", "Spieler-Punkte (ohne Schätzen)"];
-  room.questions.forEach((q, i) => headers.push(`F${i+1}: ${q.q.replace(/,/g, "")}`));
+  
+  room.questions.forEach((q, i) => {
+      headers.push(q.type === 'break' ? `Pause: ${q.q.replace(/,/g, "")}` : `F${i+1}: ${q.q.replace(/,/g, "")}`);
+  });
   
   const rows = players.map(p => {
     const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
@@ -70,22 +70,21 @@ const downloadCSV = (players, room) => {
     const row = [teamRank, tId, myTeam.totalScore, p.name, p.score];
     room.questions.forEach((q, qi) => {
       const a = p.answers?.[qi];
-      if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
+      if (q.type === 'break') row.push("---");
+      else if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
       else if (q.type === 'buzzer') row.push(a ? "Gebuzzert & Richtig" : "---");
       else row.push(a?.toString().replace(/,/g, "") || "---");
     });
     return row;
   });
 
-  // Nach Team-Platz sortieren
   rows.sort((a, b) => a[0] - b[0]);
 
   const csv = "\uFEFF" + [headers, ...rows].map(e => e.join(",")).join("\n");
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = `Quizkopp_Export_${room.id}.csv`; a.click();
+  a.href = url; a.download = `Quizkopp_Export_${room.id}.csv`; a.click();
 };
 
 // --- HAUPT-APP ---
@@ -98,7 +97,7 @@ export default function App() {
   const [currentRoomCode, setCurrentRoomCode] = useState('');
   const [adminAuth, setAdminAuth] = useState(false);
   
-  const [editingQuiz, setEditingQuiz] = useState(null);
+  const [editingQuiz, setEditingQuiz] = useState(null); 
 
   useEffect(() => {
     signInAnonymously(auth);
@@ -176,7 +175,7 @@ export default function App() {
     if(!activeRoom) return;
     const q = activeRoom.questions[activeRoom.currentQuestionIndex];
     const batch = writeBatch(db);
-
+    
     if (q.type === 'multiple') {
       for (const p of players) {
         const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
@@ -203,17 +202,13 @@ export default function App() {
           if (diff < minDiff) minDiff = diff;
         }
         
-        // Gewinner-Teams identifizieren
         const winningTeams = Object.keys(teamDiffs).filter(tId => teamDiffs[tId] === minDiff);
-        
-        // NEU: Team-Punkt vergeben (Speichern im Room-Objekt)
         const newTeamScores = { ...(activeRoom.teamScores || {}) };
         winningTeams.forEach(tId => {
             newTeamScores[tId] = (newTeamScores[tId] || 0) + 1;
         });
         batch.update(doc(db, 'rooms', currentRoomCode), { teamScores: newTeamScores });
 
-        // Spieler bekommen KEINEN Einzelpunkt, aber das "wasCorrect" Signal für den Richtig-Screen
         for (const p of players) {
           const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
           const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
@@ -497,10 +492,16 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         <div key={i} className="bg-white p-6 rounded-3xl border border-sky-100 shadow-md space-y-4">
           <div className="flex gap-4">
             <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : "Frage..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
+            
             <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.type} onChange={e=>update(i,'type',e.target.value)}>
-              <option value="multiple">Multiple Choice</option><option value="text">Freitext</option><option value="estimation">Schätzung</option><option value="buzzer">Buzzer-Frage</option><option value="break">⏸️ Pause / Zwischenstand</option>
+              <option value="multiple">Multiple Choice</option>
+              <option value="text">Freitext</option>
+              <option value="estimation">Schätzung</option>
+              <option value="buzzer">Buzzer-Frage</option>
+              <option value="break">⏸️ Pause / Zwischenstand</option>
             </select>
-            <button onClick={() => removeQ(i)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Frage löschen"><Trash2 size={20}/></button>
+            
+            <button onClick={() => removeQ(i)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Löschen"><Trash2 size={20}/></button>
           </div>
           
           {q.type !== 'break' && (
@@ -544,6 +545,29 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   const q = room.questions[room.currentQuestionIndex];
   const isLastQuestion = room.currentQuestionIndex >= room.questions.length - 1;
   const sortedTeams = getSortedTeams(players, room);
+  
+  const [showBuzzerAnswer, setShowBuzzerAnswer] = useState(false);
+  const [numTeams, setNumTeams] = useState(2); // NEU: State für Team-Würfel-Zahl
+
+  useEffect(() => {
+    setShowBuzzerAnswer(false);
+  }, [room.currentQuestionIndex]);
+
+  // NEU: ZUFALLSGENERATOR
+  const generateRandomTeams = async () => {
+    if (players.length === 0) return alert("Es sind noch keine Spieler im Raum!");
+    if (window.confirm(`Alle Spieler jetzt zufällig auf ${numTeams} Teams aufteilen?`)) {
+      const shuffled = [...players].sort(() => 0.5 - Math.random());
+      const batch = writeBatch(db);
+      
+      shuffled.forEach((p, index) => {
+        const teamIndex = (index % numTeams) + 1;
+        batch.update(doc(db, 'players', p.id), { team: `Team ${teamIndex}` });
+      });
+      
+      await batch.commit();
+    }
+  };
 
   const renderEstimationAnswers = () => {
     const answeredPlayers = players.filter(p => p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "");
@@ -590,18 +614,31 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     <div className="text-center py-20 space-y-12 relative h-full">
       <p className="text-3xl text-slate-400 uppercase tracking-widest font-bold">Raum-Code</p>
       <h2 className="text-[10rem] leading-none font-mono font-bold text-[#E69F00] tracking-widest">{room.id}</h2>
+      
       <div className="bg-white p-8 rounded-3xl border border-sky-100 max-w-4xl mx-auto shadow-xl">
-        <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700">
-            <Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})
-        </h3>
+        <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700"><Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})</h3>
         <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">{p.name} {p.team && <span className="text-sm font-normal text-slate-400 ml-1">({p.team})</span>}</span>)}</div>
+        
+        {/* NEU: WÜRFEL BEREICH */}
+        {players.length > 0 && (
+          <div className="mt-12 pt-8 border-t border-sky-100">
+            <h4 className="mb-4 font-bold text-xl text-slate-500">🎲 Zufällige Teams auslosen</h4>
+            <div className="flex items-center justify-center gap-4">
+                <span className="text-slate-400 font-medium">Anzahl Teams:</span>
+                <input type="number" min="2" max="20" value={numTeams} onChange={e => setNumTeams(parseInt(e.target.value) || 2)} className="w-20 bg-slate-50 p-3 rounded-xl border border-sky-100 text-center font-bold text-lg outline-none focus:border-[#E69F00]" />
+                <button onClick={generateRandomTeams} className="bg-sky-500 text-white px-6 py-3 rounded-xl font-bold shadow-md hover:bg-sky-600 transition-colors">Auslosen!</button>
+            </div>
+          </div>
+        )}
       </div>
+
       <button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-500 text-white px-24 py-8 rounded-full text-4xl font-bold shadow-xl transition-all mt-10">Quiz starten!</button>
     </div>
   );
+  
   if (room.status === 'finished') return (
     <div className="space-y-8 max-w-4xl mx-auto py-10 text-slate-700 relative h-full">
-      <h2 className="text-center text-6xl text-[#E69F00] font-bold mb-12"> Endstand</h2>
+      <h2 className="text-center text-6xl text-[#E69F00] font-bold mb-12">🏆 Endstand</h2>
       {sortedTeams.map((t,i)=>(
         <div key={t.name} className={`p-8 rounded-3xl flex justify-between items-center border ${i===0?'bg-yellow-50 border-[#E69F00] shadow-md':'bg-white border-sky-50 shadow-sm'}`}>
           <div>
@@ -646,7 +683,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
           <div className="bg-white p-8 md:p-12 rounded-3xl border border-sky-100 shadow-2xl relative flex-grow flex flex-col">
             <div className="flex justify-between items-center mb-8">
                <span className="text-lg font-bold text-slate-400 uppercase tracking-widest bg-slate-50 px-4 py-2 rounded-full border border-sky-50">Frage {room.currentQuestionIndex+1}/{room.questions.length}</span>
-               {q.type !== 'buzzer' && <div className="flex items-center gap-3 text-[#E69F00] font-mono text-4xl font-bold bg-slate-50 px-6 py-2 rounded-full border border-sky-50"><Clock size={32}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : ''}</div>}
+               {q.type !== 'buzzer' && <div className="flex items-center gap-3 text-[#E69F00] font-mono text-4xl font-bold bg-slate-50 px-6 py-2 rounded-full border border-sky-50"><Clock size={32}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</div>}
                {q.type === 'buzzer' && <div className="flex items-center gap-3 text-red-500 font-bold uppercase text-2xl bg-red-50 px-6 py-2 rounded-full text-red-600 animate-pulse"><Bell size={28}/> Buzzer aktiv</div>}
             </div>
             {q.imgUrl && <img src={q.imgUrl} className="w-full max-h-[45vh] object-contain rounded-2xl mb-8 bg-slate-50 p-4 border border-sky-50"/>}
@@ -658,9 +695,24 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                 <h3 className="text-6xl md:text-7xl font-black text-slate-800 mb-2">{room.buzzerWinnerName}</h3>
                 
                 {room.buzzerReaction && (
-                    <p className="text-2xl font-bold text-red-500 mb-8 flex items-center justify-center gap-2">
+                    <p className="text-2xl font-bold text-red-500 mb-6 flex items-center justify-center gap-2">
                         <Clock size={24}/> {(room.buzzerReaction / 1000).toFixed(2)} Sekunden
                     </p>
+                )}
+
+                {q.correctValue && (
+                    <div className="mb-8">
+                        {!showBuzzerAnswer ? (
+                            <button onClick={() => setShowBuzzerAnswer(true)} className="text-sm font-bold text-red-400 hover:text-red-600 underline transition-colors">
+                                Lösung einblenden (Nur für dich)
+                            </button>
+                        ) : (
+                            <div className="bg-white/80 p-4 rounded-xl border border-red-200 inline-block shadow-inner">
+                                <span className="text-xs text-slate-500 uppercase font-bold block mb-1">Lösung:</span>
+                                <span className="text-xl font-bold text-slate-800">{q.correctValue}</span>
+                            </div>
+                        )}
+                    </div>
                 )}
 
                 <div className="flex gap-6 justify-center">
@@ -705,10 +757,11 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
           {(q.type !== 'buzzer' || room.status === 'revealed') && (
             <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
-              {room.status === 'active' ? 'Lösung' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
+              {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
         </div>
+        
         <div className="bg-white p-8 rounded-3xl border border-sky-100 h-fit sticky top-24 shadow-xl">
           <h3 className="text-2xl font-bold mb-8 uppercase tracking-widest text-slate-300">Team Ranking</h3>
           <div className="space-y-4">
@@ -727,6 +780,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                     <div className="px-4 py-2 bg-white space-y-2 border-t border-sky-50">
                       {t.players.map(p => {
                         const isReadyOrCorrect = room.status === 'revealed' ? p.wasCorrect === true : ((p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "") || p.id === room.buzzerWinner);
+                        
                         return (
                           <div key={p.id} className="flex justify-between text-sm items-center">
                             <span className="text-slate-500 pl-6">{p.name}</span>
@@ -779,7 +833,14 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
     onBuzz(reactionTimeMs);
   };
 
-  if (room.status === 'lobby') return <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700"><h2 className="text-2xl font-bold">Hallo {player.name}!</h2><p className="mt-8 animate-pulse text-[#E69F00]">Warte auf Start...</p></div>;
+  if (room.status === 'lobby') return (
+    <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700">
+      <h2 className="text-2xl font-bold">Hallo {player.name}!</h2>
+      {/* NEU: Anzeige des zugelosten Teams in der Lobby */}
+      {player.team && <div className="mt-4 text-lg font-bold text-sky-600 bg-sky-50 inline-block px-6 py-2 rounded-full border border-sky-100">Dein Team: {player.team}</div>}
+      <p className="mt-8 animate-pulse text-[#E69F00]">Warte auf Start...</p>
+    </div>
+  );
   
   if (room.status === 'finished') {
     const myTeamId = player.team && player.team.trim() !== "" ? player.team.trim() : player.name;
@@ -842,14 +903,31 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
         )}
         
         {room.status === 'active' && room.buzzerWinner && room.buzzerWinner === player.id && <div className="py-12 bg-red-50 rounded-3xl border-2 border-red-500 animate-pulse text-3xl font-bold text-red-500">DU BIST DRAN!</div>}
-        {room.status === 'revealed' && typeof player.wasCorrect === 'boolean' && <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-slate-50 border-sky-100 text-slate-400'}`}><h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für dich!':'Leider kein Punkt.'}</h3></div>}
+        
+        {room.status === 'revealed' && typeof player.wasCorrect === 'boolean' && (
+            <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-slate-50 border-sky-100 text-slate-400'}`}>
+                <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für dich!':'Leider kein Punkt.'}</h3>
+            </div>
+        )}
       </div>
     );
   }
   
   return (
     <div className="max-w-md mx-auto space-y-6 text-slate-700">
-      <div className="flex justify-between text-xs font-bold text-slate-400 uppercase tracking-widest"><span>Frage {room.currentQuestionIndex+1}</span><span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : ''}</span></div>
+      <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
+        <span>Frage {room.currentQuestionIndex+1}</span>
+        {q.timer === 0 && <span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> ∞</span>}
+      </div>
+
+      {q.timer > 0 && room.status === 'active' && !timeIsUp && (
+        <div className="flex justify-center my-4">
+           <div className={`flex items-center gap-3 px-8 py-3 rounded-full border-4 shadow-lg font-mono text-4xl font-bold transition-all duration-300 ${room.timeLeft <= 5 ? 'bg-red-50 border-red-500 text-red-600 animate-pulse scale-110' : 'bg-white border-sky-100 text-[#E69F00]'}`}>
+              <Clock size={36}/> {room.timeLeft}s
+           </div>
+        </div>
+      )}
+
       <h2 className="text-2xl font-bold leading-tight">{q.q}</h2>
       {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
       
