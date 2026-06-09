@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
@@ -21,11 +21,13 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 // --- HELFER: TEAM BERECHNUNG ---
+// Diese Funktion berechnet live die Team-Punkte (Einzelpunkte kumuliert + spezifische Team-Schätzpunkte)
 const getSortedTeams = (players, room) => {
   if (!room || !players) return [];
   const teamsMap = {};
   
   players.forEach(p => {
+      // Wer kein Team hat, ist ein 1-Mann-Team unter seinem eigenen Namen
       const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
       if (!teamsMap[tId]) {
           teamsMap[tId] = { 
@@ -39,6 +41,7 @@ const getSortedTeams = (players, room) => {
       teamsMap[tId].playerScoreSum += p.score;
   });
 
+  // Gesamtpunktzahl = Alle Einzelpunkte der Mitglieder + Team-Punkte (aus Schätzfragen)
   Object.values(teamsMap).forEach(t => {
       t.totalScore = t.playerScoreSum + t.estimationScore;
   });
@@ -57,10 +60,7 @@ const generateRoomCode = () => {
 const downloadCSV = (players, room) => {
   const sortedTeams = getSortedTeams(players, room);
   const headers = ["Team-Platz", "Team", "Team-Punkte Gesamt", "Spieler", "Spieler-Punkte (ohne Schätzen)"];
-  
-  room.questions.forEach((q, i) => {
-      headers.push(q.type === 'break' ? `Pause: ${q.q.replace(/,/g, "")}` : `F${i+1}: ${q.q.replace(/,/g, "")}`);
-  });
+  room.questions.forEach((q, i) => headers.push(`F${i+1}: ${q.q.replace(/,/g, "")}`));
   
   const rows = players.map(p => {
     const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
@@ -70,21 +70,22 @@ const downloadCSV = (players, room) => {
     const row = [teamRank, tId, myTeam.totalScore, p.name, p.score];
     room.questions.forEach((q, qi) => {
       const a = p.answers?.[qi];
-      if (q.type === 'break') row.push("---");
-      else if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
+      if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
       else if (q.type === 'buzzer') row.push(a ? "Gebuzzert & Richtig" : "---");
       else row.push(a?.toString().replace(/,/g, "") || "---");
     });
     return row;
   });
 
+  // Nach Team-Platz sortieren
   rows.sort((a, b) => a[0] - b[0]);
 
   const csv = "\uFEFF" + [headers, ...rows].map(e => e.join(",")).join("\n");
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = `Quizkopp_Export_${room.id}.csv`; a.click();
+  a.href = url;
+  a.download = `Quizkopp_Export_${room.id}.csv`; a.click();
 };
 
 // --- HAUPT-APP ---
@@ -97,7 +98,7 @@ export default function App() {
   const [currentRoomCode, setCurrentRoomCode] = useState('');
   const [adminAuth, setAdminAuth] = useState(false);
   
-  const [editingQuiz, setEditingQuiz] = useState(null); 
+  const [editingQuiz, setEditingQuiz] = useState(null);
 
   useEffect(() => {
     signInAnonymously(auth);
@@ -175,7 +176,7 @@ export default function App() {
     if(!activeRoom) return;
     const q = activeRoom.questions[activeRoom.currentQuestionIndex];
     const batch = writeBatch(db);
-    
+
     if (q.type === 'multiple') {
       for (const p of players) {
         const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
@@ -202,13 +203,17 @@ export default function App() {
           if (diff < minDiff) minDiff = diff;
         }
         
+        // Gewinner-Teams identifizieren
         const winningTeams = Object.keys(teamDiffs).filter(tId => teamDiffs[tId] === minDiff);
+        
+        // NEU: Team-Punkt vergeben (Speichern im Room-Objekt)
         const newTeamScores = { ...(activeRoom.teamScores || {}) };
         winningTeams.forEach(tId => {
             newTeamScores[tId] = (newTeamScores[tId] || 0) + 1;
         });
         batch.update(doc(db, 'rooms', currentRoomCode), { teamScores: newTeamScores });
 
+        // Spieler bekommen KEINEN Einzelpunkt, aber das "wasCorrect" Signal für den Richtig-Screen
         for (const p of players) {
           const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
           const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
@@ -240,24 +245,19 @@ export default function App() {
             const playerName = n.trim();
             if(!allRooms.find(r=>r.id===roomCode)) return alert("Raum nicht gefunden!");
             
-            // --- NEU: DIE RETTUNGSRING / REJOIN LOGIK ---
             const existingPlayer = allPlayers.find(p => p.roomCode === roomCode && p.name.toLowerCase() === playerName.toLowerCase());
             
             if (existingPlayer) {
                 if (existingPlayer.id !== user.uid) {
-                    // Neues Gerät/Tab, aber Name existiert: Wir löschen den alten Geist und retten alle Punkte!
-                    const { id, ...oldData } = existingPlayer; // Wir filtern die alte ID heraus
+                    const { id, ...oldData } = existingPlayer; 
                     await deleteDoc(doc(db, 'players', existingPlayer.id));
                     await setDoc(doc(db, 'players', user.uid), { ...oldData, team: t });
                 } else {
-                    // Selbes Gerät, nur Refreshed
                     await updateDoc(doc(db, 'players', user.uid), { team: t });
                 }
             } else {
-                // Ganz normaler neuer Spieler
                 await setDoc(doc(db,'players',user.uid),{name:playerName, team:t, roomCode:roomCode, score:0, currentAnswer:null, answers:{}});
             }
-            
             setCurrentRoomCode(roomCode); setRole('player');
         }} onAdmin={() => setAdminAuth('login')}/>}
 
@@ -386,6 +386,8 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   const [title, setTitle] = useState(initialQuiz ? initialQuiz.title : '');
   const [qs, setQs] = useState(initialQuiz ? initialQuiz.questions : [{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true}]);
   
+  const fileInputRef = useRef(null);
+
   const update = (i,f,v) => { const n=[...qs]; n[i][f]=v; setQs(n); };
   
   const removeQ = (index) => {
@@ -408,8 +410,83 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
     }
   };
 
+  const downloadCsvTemplate = () => {
+    const headers = "Typ;Frage;Option 1;Option 2;Option 3;Option 4;Lösung;Timer;Bild URL\n";
+    const example1 = "multiple;Wie hoch ist der Eiffelturm?;300m;330m;350m;400m;2;30;\n";
+    const example2 = "text;Wer schrieb Faust?;-;-;-;-;Goethe;30;\n";
+    const example3 = "estimation;Wie alt wurde die älteste Schildkröte?;-;-;-;-;188;30;\n";
+    const example4 = "buzzer;Erkenne dieses Lied (Audio läuft über Beamer);-;-;-;-;Queen - Bohemian Rhapsody;0;\n";
+    const example5 = "break;Ende von Runde 1 - Zwischenstand!;-;-;-;-;-;0;\n";
+    
+    const csvContent = "\uFEFF" + headers + example1 + example2 + example3 + example4 + example5;
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "Quizkopp_Vorlage.csv"; a.click();
+  };
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target.result;
+      const lines = text.split('\n');
+      const newQuestions = [];
+
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
+        const cols = line.split(';');
+        if (cols.length < 2) continue; 
+
+        const type = cols[0].toLowerCase();
+        if (!['multiple', 'text', 'estimation', 'buzzer', 'break'].includes(type)) continue;
+
+        const parsedQ = {
+          type: type,
+          q: cols[1] || "",
+          options: [cols[2] || "", cols[3] || "", cols[4] || "", cols[5] || ""],
+          correctIndex: parseInt(cols[6]) - 1 || 0,
+          correctValue: cols[6] || "",
+          timer: parseInt(cols[7]) || 0,
+          imgUrl: cols[8] || "",
+          showImg: true,
+          showAnswers: true
+        };
+
+        newQuestions.push(parsedQ);
+      }
+
+      if (newQuestions.length > 0) {
+        setQs(newQuestions);
+        alert(`${newQuestions.length} Fragen erfolgreich importiert!`);
+      } else {
+        alert("Keine gültigen Fragen gefunden. Bitte Format prüfen!");
+      }
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    };
+    reader.readAsText(file, "UTF-8");
+  };
+
   return (
     <div className="space-y-6">
+      
+      <div className="bg-sky-50 border border-sky-100 p-4 rounded-2xl flex flex-wrap gap-4 items-center justify-between shadow-inner mb-8">
+        <div>
+            <p className="text-sm font-bold text-slate-600 mb-1">Fragen per Excel/CSV importieren</p>
+            <button onClick={downloadCsvTemplate} className="text-xs text-sky-600 hover:text-sky-800 underline">Vorlage herunterladen</button>
+        </div>
+        <div className="flex gap-2">
+            <input type="file" accept=".csv" ref={fileInputRef} onChange={handleFileUpload} className="hidden" id="csv-upload" />
+            <label htmlFor="csv-upload" className="cursor-pointer bg-white px-4 py-2 rounded-xl border border-sky-200 text-sky-700 font-semibold text-sm hover:bg-sky-100 transition-colors flex items-center gap-2 shadow-sm">
+                <Upload size={16} /> CSV Hochladen
+            </label>
+        </div>
+      </div>
+
       <div className="flex gap-4 items-center">
         <input placeholder="Quiz-Name" className="bg-transparent text-2xl font-bold border-b border-sky-200 w-full outline-none" value={title} onChange={e=>setTitle(e.target.value)}/>
         <button onClick={saveToLib} className="bg-white p-2 rounded border border-sky-100 shadow-sm flex items-center gap-2 text-slate-600 font-bold hover:bg-slate-50 transition-colors">
@@ -420,16 +497,10 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         <div key={i} className="bg-white p-6 rounded-3xl border border-sky-100 shadow-md space-y-4">
           <div className="flex gap-4">
             <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : "Frage..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
-            
             <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.type} onChange={e=>update(i,'type',e.target.value)}>
-              <option value="multiple">Multiple Choice</option>
-              <option value="text">Freitext</option>
-              <option value="estimation">Schätzung</option>
-              <option value="buzzer">Buzzer-Frage</option>
-              <option value="break">⏸️ Pause / Zwischenstand</option>
+              <option value="multiple">Multiple Choice</option><option value="text">Freitext</option><option value="estimation">Schätzung</option><option value="buzzer">Buzzer-Frage</option><option value="break">⏸️ Pause / Zwischenstand</option>
             </select>
-            
-            <button onClick={() => removeQ(i)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Löschen"><Trash2 size={20}/></button>
+            <button onClick={() => removeQ(i)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Frage löschen"><Trash2 size={20}/></button>
           </div>
           
           {q.type !== 'break' && (
@@ -520,16 +591,17 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
       <p className="text-3xl text-slate-400 uppercase tracking-widest font-bold">Raum-Code</p>
       <h2 className="text-[10rem] leading-none font-mono font-bold text-[#E69F00] tracking-widest">{room.id}</h2>
       <div className="bg-white p-8 rounded-3xl border border-sky-100 max-w-4xl mx-auto shadow-xl">
-        <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700"><Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})</h3>
+        <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700">
+            <Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})
+        </h3>
         <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">{p.name} {p.team && <span className="text-sm font-normal text-slate-400 ml-1">({p.team})</span>}</span>)}</div>
       </div>
       <button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-500 text-white px-24 py-8 rounded-full text-4xl font-bold shadow-xl transition-all mt-10">Quiz starten!</button>
     </div>
   );
-  
   if (room.status === 'finished') return (
     <div className="space-y-8 max-w-4xl mx-auto py-10 text-slate-700 relative h-full">
-      <h2 className="text-center text-6xl text-[#E69F00] font-bold mb-12">🏆 Endstand</h2>
+      <h2 className="text-center text-6xl text-[#E69F00] font-bold mb-12"> Endstand</h2>
       {sortedTeams.map((t,i)=>(
         <div key={t.name} className={`p-8 rounded-3xl flex justify-between items-center border ${i===0?'bg-yellow-50 border-[#E69F00] shadow-md':'bg-white border-sky-50 shadow-sm'}`}>
           <div>
@@ -574,7 +646,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
           <div className="bg-white p-8 md:p-12 rounded-3xl border border-sky-100 shadow-2xl relative flex-grow flex flex-col">
             <div className="flex justify-between items-center mb-8">
                <span className="text-lg font-bold text-slate-400 uppercase tracking-widest bg-slate-50 px-4 py-2 rounded-full border border-sky-50">Frage {room.currentQuestionIndex+1}/{room.questions.length}</span>
-               {q.type !== 'buzzer' && <div className="flex items-center gap-3 text-[#E69F00] font-mono text-4xl font-bold bg-slate-50 px-6 py-2 rounded-full border border-sky-50"><Clock size={32}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</div>}
+               {q.type !== 'buzzer' && <div className="flex items-center gap-3 text-[#E69F00] font-mono text-4xl font-bold bg-slate-50 px-6 py-2 rounded-full border border-sky-50"><Clock size={32}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : ''}</div>}
                {q.type === 'buzzer' && <div className="flex items-center gap-3 text-red-500 font-bold uppercase text-2xl bg-red-50 px-6 py-2 rounded-full text-red-600 animate-pulse"><Bell size={28}/> Buzzer aktiv</div>}
             </div>
             {q.imgUrl && <img src={q.imgUrl} className="w-full max-h-[45vh] object-contain rounded-2xl mb-8 bg-slate-50 p-4 border border-sky-50"/>}
@@ -637,7 +709,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             </button>
           )}
         </div>
-        
         <div className="bg-white p-8 rounded-3xl border border-sky-100 h-fit sticky top-24 shadow-xl">
           <h3 className="text-2xl font-bold mb-8 uppercase tracking-widest text-slate-300">Team Ranking</h3>
           <div className="space-y-4">
@@ -656,7 +727,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                     <div className="px-4 py-2 bg-white space-y-2 border-t border-sky-50">
                       {t.players.map(p => {
                         const isReadyOrCorrect = room.status === 'revealed' ? p.wasCorrect === true : ((p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "") || p.id === room.buzzerWinner);
-                        
                         return (
                           <div key={p.id} className="flex justify-between text-sm items-center">
                             <span className="text-slate-500 pl-6">{p.name}</span>
@@ -772,19 +842,14 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
         )}
         
         {room.status === 'active' && room.buzzerWinner && room.buzzerWinner === player.id && <div className="py-12 bg-red-50 rounded-3xl border-2 border-red-500 animate-pulse text-3xl font-bold text-red-500">DU BIST DRAN!</div>}
-        
-        {room.status === 'revealed' && typeof player.wasCorrect === 'boolean' && (
-            <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-slate-50 border-sky-100 text-slate-400'}`}>
-                <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für euch!':'Leider kein Punkt.'}</h3>
-            </div>
-        )}
+        {room.status === 'revealed' && typeof player.wasCorrect === 'boolean' && <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-slate-50 border-sky-100 text-slate-400'}`}><h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für dich!':'Leider kein Punkt.'}</h3></div>}
       </div>
     );
   }
   
   return (
     <div className="max-w-md mx-auto space-y-6 text-slate-700">
-      <div className="flex justify-between text-xs font-bold text-slate-400 uppercase tracking-widest"><span>Frage {room.currentQuestionIndex+1}</span><span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</span></div>
+      <div className="flex justify-between text-xs font-bold text-slate-400 uppercase tracking-widest"><span>Frage {room.currentQuestionIndex+1}</span><span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : ''}</span></div>
       <h2 className="text-2xl font-bold leading-tight">{q.q}</h2>
       {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
       
@@ -813,7 +878,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
       
       {room.status === 'revealed' && (q.type !== 'text' || player.corrected) && typeof player.wasCorrect === 'boolean' && (
          <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
-             <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für euch!':'Leider kein Punkt.'}</h3>
+             <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für dich!':'Leider kein Punkt.'}</h3>
              {q.type === 'estimation' && <p className="mt-2 text-sm text-slate-600 font-bold bg-white inline-block px-4 py-1 rounded-full border border-slate-200">Lösung: {q.correctValue}</p>}
          </div>
       )}
