@@ -633,7 +633,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
           {(q.type !== 'buzzer' || room.status === 'revealed') && (
             <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
-              {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
+              {room.status === 'active' ? 'Lösung' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
         </div>
