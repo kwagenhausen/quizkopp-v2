@@ -20,6 +20,66 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+// --- HELFER: KONFETTI ANIMATION ---
+const Confetti = () => {
+  const [particles] = useState(() => Array.from({ length: 120 }).map((_, i) => ({
+    id: i,
+    left: Math.random() * 100,
+    animationDelay: Math.random() * 3,
+    color: ['#E69F00', '#10B981', '#3B82F6', '#EF4444', '#F472B6', '#A855F7'][Math.floor(Math.random() * 6)],
+    size: Math.random() * 8 + 6 // 6px bis 14px
+  })));
+
+  return (
+    <div className="fixed inset-0 pointer-events-none z-50 overflow-hidden">
+      {particles.map(p => (
+        <div key={p.id} 
+             className="absolute top-[-5vh] rounded-sm opacity-80"
+             style={{
+               left: `${p.left}%`,
+               width: `${p.size}px`,
+               height: `${p.size}px`,
+               backgroundColor: p.color,
+               animation: `fall 3.5s linear ${p.animationDelay}s infinite`
+             }}
+        />
+      ))}
+      <style>{`
+        @keyframes fall {
+          0% { transform: translateY(0) rotate(0deg) scale(1); opacity: 1; }
+          80% { opacity: 1; }
+          100% { transform: translateY(110vh) rotate(720deg) scale(0.5); opacity: 0; }
+        }
+      `}</style>
+    </div>
+  );
+};
+
+// --- HELFER: MULTIMEDIA ---
+const getMediaType = (url) => {
+  if (!url) return 'none';
+  const lowerUrl = url.toLowerCase();
+  if (lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be')) return 'youtube';
+  if (lowerUrl.endsWith('.mp3') || lowerUrl.endsWith('.wav') || lowerUrl.endsWith('.m4a') || lowerUrl.endsWith('.ogg')) return 'audio';
+  return 'image';
+};
+
+const getYouTubeEmbedUrl = (url) => {
+  try {
+    let videoId = '';
+    if (url.includes('youtu.be/')) {
+        videoId = url.split('youtu.be/')[1].split(/[?#]/)[0];
+    } else if (url.includes('youtube.com/watch')) {
+        videoId = url.split('v=')[1].split('&')[0];
+    } else if (url.includes('youtube.com/embed/')) {
+        return url; 
+    }
+    return `https://www.youtube.com/embed/${videoId}?rel=0`;
+  } catch (e) {
+    return url;
+  }
+};
+
 // --- HELFER: TEAM BERECHNUNG ---
 const getSortedTeams = (players, room) => {
   if (!room || !players) return [];
@@ -135,14 +195,27 @@ export default function App() {
     setCurrentRoomCode(code); setRole('host');
   };
 
-  const manualCorrect = async (pId, ok) => {
+  // --- NEU: HALBE PUNKTE & BUGFIX FÜR MANUELLE KORREKTUR ---
+  const manualCorrect = async (pId, pointsToAward) => {
     const p = players.find(x => x.id === pId);
-    await updateDoc(doc(db, 'players', pId), { score: ok ? p.score + 1 : p.score, corrected: true, wasCorrect: ok });
+    
+    // Verhindert, dass mehrmaliges Klicken die Punktzahl ins Unendliche treibt
+    const oldAwarded = p.currentAwardedPoints || 0;
+    const newScore = p.score - oldAwarded + pointsToAward;
+
+    await updateDoc(doc(db, 'players', pId), { 
+        score: newScore, 
+        corrected: true, 
+        wasCorrect: pointsToAward > 0,
+        currentAwardedPoints: pointsToAward
+    });
   };
 
   const handleBuzzerHost = async (isCorrect) => {
     const pId = activeRoom.buzzerWinner;
     const batch = writeBatch(db);
+    const q = activeRoom.questions[activeRoom.currentQuestionIndex];
+    const pts = q.isJoker ? 2 : 1; // JOKER LOGIK
     
     const buzzingPlayer = players.find(p => p.id === pId);
     const buzzingTeamId = buzzingPlayer && buzzingPlayer.team && buzzingPlayer.team.trim() !== "" ? buzzingPlayer.team.trim() : buzzingPlayer?.name;
@@ -153,14 +226,14 @@ export default function App() {
       if (isCorrect) {
         const isWinner = player.id === pId;
         batch.update(doc(db, 'players', player.id), { 
-            score: isWinner ? player.score + 1 : player.score, 
+            score: isWinner ? player.score + pts : player.score, 
             wasCorrect: isWinner,
             ...(isWinner ? {[`answers.${activeRoom.currentQuestionIndex}`]: true} : {})
         });
       } else {
         const isOtherTeam = playerTeamId !== buzzingTeamId;
         batch.update(doc(db, 'players', player.id), { 
-            score: isOtherTeam ? player.score + 1 : player.score, 
+            score: isOtherTeam ? player.score + pts : player.score, 
             wasCorrect: isOtherTeam,
             ...(isOtherTeam ? {[`answers.${activeRoom.currentQuestionIndex}`]: true} : {})
         });
@@ -175,12 +248,13 @@ export default function App() {
     if(!activeRoom) return;
     const q = activeRoom.questions[activeRoom.currentQuestionIndex];
     const batch = writeBatch(db);
-    
+    const pts = q.isJoker ? 2 : 1; // JOKER LOGIK
+
     if (q.type === 'multiple') {
       for (const p of players) {
         const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
         const isCorrect = hasAnswered && (p.currentAnswer == q.correctIndex);
-        batch.update(doc(db, 'players', p.id), { score: isCorrect ? p.score + 1 : p.score, wasCorrect: isCorrect });
+        batch.update(doc(db, 'players', p.id), { score: isCorrect ? p.score + pts : p.score, wasCorrect: isCorrect });
       }
     } else if (q.type === 'estimation') {
       const validPlayers = players.filter(p => p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "");
@@ -205,7 +279,7 @@ export default function App() {
         const winningTeams = Object.keys(teamDiffs).filter(tId => teamDiffs[tId] === minDiff);
         const newTeamScores = { ...(activeRoom.teamScores || {}) };
         winningTeams.forEach(tId => {
-            newTeamScores[tId] = (newTeamScores[tId] || 0) + 1;
+            newTeamScores[tId] = (newTeamScores[tId] || 0) + pts; // JOKER LOGIK FÜR TEAMS
         });
         batch.update(doc(db, 'rooms', currentRoomCode), { teamScores: newTeamScores });
 
@@ -269,7 +343,7 @@ export default function App() {
             const nextIdx = activeRoom.currentQuestionIndex + 1;
             const batch = writeBatch(db);
             for(const p of players) {
-              batch.update(doc(db,'players',p.id),{currentAnswer:null,corrected:false, wasCorrect:null});
+              batch.update(doc(db,'players',p.id),{currentAnswer:null, corrected:false, wasCorrect:null, currentAwardedPoints:0});
             }
             batch.update(doc(db,'rooms',currentRoomCode),{
               status:last?'finished':'active',
@@ -379,7 +453,7 @@ function Library({ onSelect, onEdit, onBack, db }) {
 
 function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   const [title, setTitle] = useState(initialQuiz ? initialQuiz.title : '');
-  const [qs, setQs] = useState(initialQuiz ? initialQuiz.questions : [{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true}]);
+  const [qs, setQs] = useState(initialQuiz ? initialQuiz.questions : [{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false}]);
   
   const fileInputRef = useRef(null);
 
@@ -427,8 +501,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
     const reader = new FileReader();
     reader.onload = (event) => {
       const text = event.target.result;
-      
-      // HIER IST DER FIX: Zeilen werden nun bei \r\n (Windows), \n (Linux) UND \r (alte Macs) getrennt!
       const lines = text.split(/\r\n|\n|\r/);
       const newQuestions = [];
 
@@ -451,7 +523,8 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
           timer: parseInt(cols[7]) || 0,
           imgUrl: cols[8] || "",
           showImg: true,
-          showAnswers: true
+          showAnswers: true,
+          isJoker: false // Standardmäßig aus bei Excel Import
         };
 
         newQuestions.push(parsedQ);
@@ -508,9 +581,15 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
           
           {q.type !== 'break' && (
             <div className="flex gap-4 items-center flex-wrap">
-              <input placeholder="Bild-URL (optional)" className="flex-1 min-w-[200px] bg-slate-50 p-2 rounded border border-sky-50 text-xs" value={q.imgUrl} onChange={e=>update(i,'imgUrl',e.target.value)}/>
+              <input placeholder="Bild / YouTube / MP3 URL (optional)" className="flex-1 min-w-[200px] bg-slate-50 p-2 rounded border border-sky-50 text-xs" value={q.imgUrl} onChange={e=>update(i,'imgUrl',e.target.value)}/>
               <div className="flex items-center gap-2 text-xs text-slate-400"><label>Auf Handy?</label><input type="checkbox" checked={q.showImg} onChange={e=>update(i,'showImg',e.target.checked)}/></div>
               
+              {/* NEU: JOKER CHECKBOX FÜR DEN HOST */}
+              <div className="flex items-center gap-2 text-xs text-amber-500 font-bold border-l border-amber-100 pl-4 ml-2 bg-amber-50 pr-2 py-1 rounded-md">
+                  <label>🌟 Joker-Frage (Zählt doppelt!)</label>
+                  <input type="checkbox" checked={q.isJoker} onChange={e=>update(i,'isJoker',e.target.checked)}/>
+              </div>
+
               {q.type !== 'text' && q.type !== 'buzzer' && (
                   <div className="flex items-center gap-2 text-xs text-slate-400 border-l border-sky-100 pl-4 ml-2">
                       <label>Antworten auf Beamer zeigen?</label>
@@ -536,7 +615,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         </div>
       ))}
       <div className="flex gap-4">
-        <button onClick={()=>setQs([...qs,{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true}])} className="flex-1 bg-white py-3 rounded-2xl border border-sky-100 font-bold shadow-sm text-slate-500">+ Frage hinzufügen</button>
+        <button onClick={()=>setQs([...qs,{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false}])} className="flex-1 bg-white py-3 rounded-2xl border border-sky-100 font-bold shadow-sm text-slate-500">+ Frage hinzufügen</button>
         <button onClick={()=>onCreate(qs)} className="flex-1 bg-emerald-500 text-white py-3 rounded-2xl font-bold shadow-lg">Quiz starten</button>
       </div>
     </div>
@@ -615,7 +694,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     <div className="text-center py-20 space-y-12 relative h-full">
       <p className="text-3xl text-slate-400 uppercase tracking-widest font-bold">Raum-Code</p>
       <h2 className="text-[10rem] leading-none font-mono font-bold text-[#E69F00] tracking-widest">{room.id}</h2>
-      
       <div className="bg-white p-8 rounded-3xl border border-sky-100 max-w-4xl mx-auto shadow-xl">
         <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700"><Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})</h3>
         <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">{p.name} {p.team && <span className="text-sm font-normal text-slate-400 ml-1">({p.team})</span>}</span>)}</div>
@@ -631,16 +709,16 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
           </div>
         )}
       </div>
-
       <button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-500 text-white px-24 py-8 rounded-full text-4xl font-bold shadow-xl transition-all mt-10">Quiz starten!</button>
     </div>
   );
   
   if (room.status === 'finished') return (
     <div className="space-y-8 max-w-4xl mx-auto py-10 text-slate-700 relative h-full">
+      <Confetti /> {/* NEU: Die Konfetti Kanone feuert! */}
       <h2 className="text-center text-6xl text-[#E69F00] font-bold mb-12">🏆 Endstand</h2>
       {sortedTeams.map((t,i)=>(
-        <div key={t.name} className={`p-8 rounded-3xl flex justify-between items-center border ${i===0?'bg-yellow-50 border-[#E69F00] shadow-md':'bg-white border-sky-50 shadow-sm'}`}>
+        <div key={t.name} className={`p-8 rounded-3xl flex justify-between items-center border ${i===0?'bg-yellow-50 border-[#E69F00] shadow-md z-10 relative':'bg-white border-sky-50 shadow-sm z-10 relative'}`}>
           <div>
               <span className="text-3xl font-bold block">{i+1}. {t.name}</span>
               <span className="text-sm text-slate-400">{t.players.map(p => p.name).join(", ")}</span>
@@ -648,7 +726,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
           <span className="font-mono text-4xl bg-slate-50 px-6 py-2 rounded-xl text-[#E69F00]">{t.totalScore}</span>
         </div>
       ))}
-      <button onClick={()=>downloadCSV(players,room)} className="w-full bg-white border border-sky-100 py-6 rounded-3xl flex items-center justify-center gap-4 text-2xl font-bold mt-12 shadow-md text-slate-700"><Download size={32}/> Excel-Export (CSV)</button>
+      <button onClick={()=>downloadCSV(players,room)} className="w-full bg-white border border-sky-100 py-6 rounded-3xl flex items-center justify-center gap-4 text-2xl font-bold mt-12 shadow-md text-slate-700 relative z-10"><Download size={32}/> Excel-Export (CSV)</button>
     </div>
   );
 
@@ -682,11 +760,29 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         <div className="lg:col-span-3 space-y-6 flex flex-col h-full text-slate-700">
           <div className="bg-white p-8 md:p-12 rounded-3xl border border-sky-100 shadow-2xl relative flex-grow flex flex-col">
             <div className="flex justify-between items-center mb-8">
-               <span className="text-lg font-bold text-slate-400 uppercase tracking-widest bg-slate-50 px-4 py-2 rounded-full border border-sky-50">Frage {room.currentQuestionIndex+1}/{room.questions.length}</span>
+               <div className="flex items-center gap-3">
+                 <span className="text-lg font-bold text-slate-400 uppercase tracking-widest bg-slate-50 px-4 py-2 rounded-full border border-sky-50">Frage {room.currentQuestionIndex+1}/{room.questions.length}</span>
+                 {/* NEU: JOKER BADGE FÜR DEN HOST */}
+                 {q.isJoker && <span className="text-lg font-bold text-amber-600 uppercase tracking-widest bg-amber-50 px-4 py-2 rounded-full border border-amber-200 shadow-sm animate-pulse">🌟 2 Punkte</span>}
+               </div>
                {q.type !== 'buzzer' && <div className="flex items-center gap-3 text-[#E69F00] font-mono text-4xl font-bold bg-slate-50 px-6 py-2 rounded-full border border-sky-50"><Clock size={32}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</div>}
                {q.type === 'buzzer' && <div className="flex items-center gap-3 text-red-500 font-bold uppercase text-2xl bg-red-50 px-6 py-2 rounded-full text-red-600 animate-pulse"><Bell size={28}/> Buzzer aktiv</div>}
             </div>
-            {q.imgUrl && <img src={q.imgUrl} className="w-full max-h-[45vh] object-contain rounded-2xl mb-8 bg-slate-50 p-4 border border-sky-50"/>}
+            
+            {q.imgUrl && getMediaType(q.imgUrl) === 'youtube' && (
+              <div className="w-full aspect-video rounded-2xl mb-8 overflow-hidden bg-slate-900 shadow-lg border border-sky-50">
+                <iframe className="w-full h-full" src={getYouTubeEmbedUrl(q.imgUrl)} title="YouTube video player" frameBorder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen></iframe>
+              </div>
+            )}
+            {q.imgUrl && getMediaType(q.imgUrl) === 'audio' && (
+              <div className="w-full bg-slate-800 p-8 rounded-2xl mb-8 border border-sky-50 shadow-lg flex items-center justify-center">
+                 <audio controls className="w-full max-w-lg"><source src={q.imgUrl} type="audio/mpeg" />Dein Browser unterstützt kein Audio.</audio>
+              </div>
+            )}
+            {q.imgUrl && getMediaType(q.imgUrl) === 'image' && (
+              <img src={q.imgUrl} className="w-full max-h-[45vh] object-contain rounded-2xl mb-8 bg-slate-50 p-4 border border-sky-50"/>
+            )}
+
             <h2 className="text-4xl md:text-5xl lg:text-6xl font-bold mb-10 leading-tight">{q.q}</h2>
 
             {q.type === 'buzzer' && room.status === 'active' && room.buzzerWinner && (
@@ -745,19 +841,27 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
             {room.status === 'revealed' && q.type === 'estimation' && q.showAnswers !== false && renderEstimationAnswers()}
             
+            {/* NEU: HALBE PUNKTE BEI FREITEXT RUNDEN */}
             {room.status === 'revealed' && q.type === 'text' && <div className="space-y-4 mt-8 border-t border-sky-100 pt-8">
               <h3 className="text-xl font-bold text-slate-600 mb-4">Antworten bewerten</h3>
               {players.map(p=>(
-              <div key={p.id} className="flex justify-between items-center bg-slate-50 p-6 rounded-2xl border border-sky-50 shadow-sm">
-                <div className="pr-4"><span className="text-sm font-bold text-slate-400 uppercase">{p.name}</span>{p.team && <span className="text-xs text-slate-400 ml-2">({p.team})</span>}<p className="text-2xl italic mt-1">"{p.currentAnswer||'---'}"</p></div>
-                <div className="flex gap-3"><button onClick={()=>onCorrect(p.id,false)} className={`p-4 rounded-xl shadow-sm ${p.corrected&&!p.wasCorrect?'bg-red-500 text-white':'bg-white text-slate-300 hover:text-red-500'}`}><XCircle size={32}/></button><button onClick={()=>onCorrect(p.id,true)} className={`p-4 rounded-xl shadow-sm ${p.corrected&&p.wasCorrect?'bg-emerald-500 text-white':'bg-white text-slate-300 hover:text-emerald-500'}`}><CheckCircle size={32}/></button></div>
+              <div key={p.id} className="flex flex-col sm:flex-row gap-4 justify-between sm:items-center bg-slate-50 p-6 rounded-2xl border border-sky-50 shadow-sm">
+                <div className="pr-4">
+                    <span className="text-sm font-bold text-slate-400 uppercase">{p.name}</span>{p.team && <span className="text-xs text-slate-400 ml-2">({p.team})</span>}
+                    <p className="text-2xl italic mt-1">"{p.currentAnswer||'---'}"</p>
+                </div>
+                <div className="flex gap-2">
+                    <button onClick={()=>onCorrect(p.id, 0)} className={`p-4 rounded-xl shadow-sm transition-all ${p.corrected && p.currentAwardedPoints === 0 ? 'bg-red-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-red-500'}`} title="0 Punkte"><XCircle size={32}/></button>
+                    <button onClick={()=>onCorrect(p.id, 0.5)} className={`p-4 rounded-xl shadow-sm transition-all font-black text-2xl w-[64px] flex justify-center items-center ${p.corrected && p.currentAwardedPoints === 0.5 ? 'bg-orange-400 text-white scale-105' : 'bg-white text-slate-300 hover:text-orange-400'}`} title="Halber Punkt">½</button>
+                    <button onClick={()=>onCorrect(p.id, q.isJoker ? 2 : 1)} className={`p-4 rounded-xl shadow-sm transition-all ${p.corrected && p.currentAwardedPoints >= 1 ? 'bg-emerald-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-emerald-500'}`} title={q.isJoker ? "2 Punkte" : "1 Punkt"}><CheckCircle size={32}/></button>
+                </div>
               </div>
             ))}</div>}
           </div>
 
           {(q.type !== 'buzzer' || room.status === 'revealed') && (
             <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
-              {room.status === 'active' ? 'Lösung' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
+              {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
         </div>
@@ -847,18 +951,20 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
     const myRank = sortedTeams.findIndex(t => t.name === myTeamId) + 1;
     
     return (
-      <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700">
-        <Trophy size={64} className="mx-auto text-[#E69F00] mb-6"/>
-        <h2 className="text-2xl font-bold mb-2">Quiz beendet!</h2>
+      <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700 relative overflow-hidden">
+        {/* NEU: KONFETTI AUF DEM HANDY */}
+        {myRank <= 3 && <Confetti />} 
+        <Trophy size={64} className="mx-auto text-[#E69F00] mb-6 relative z-10"/>
+        <h2 className="text-2xl font-bold mb-2 relative z-10">Quiz beendet!</h2>
         
-        <div className="mt-6 mb-8">
+        <div className="mt-6 mb-8 relative z-10">
             <p className="text-sm text-slate-400 font-bold uppercase tracking-widest mb-2">Team-Punkte</p>
             <div className="text-6xl font-bold text-[#E69F00]">{myTeam?.totalScore || 0}</div>
         </div>
 
-        <div className="text-xl font-bold text-emerald-500 bg-emerald-50 inline-block px-6 py-3 rounded-full border border-emerald-100 mb-6">Dein Team-Platz: {myRank}</div>
+        <div className="text-xl font-bold text-emerald-500 bg-emerald-50 inline-block px-6 py-3 rounded-full border border-emerald-100 mb-6 relative z-10">Dein Team-Platz: {myRank}</div>
         
-        <div className="border-t border-sky-50 pt-6">
+        <div className="border-t border-sky-50 pt-6 relative z-10">
             <p className="text-sm text-slate-400">Deine persönlichen Punkte</p>
             <p className="text-2xl font-bold text-slate-600">{player.score}</p>
         </div>
@@ -891,8 +997,22 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
   if (q.type === 'buzzer') {
     return (
       <div className="max-w-md mx-auto space-y-6 text-center text-slate-700">
-        <div className="flex justify-between text-xs font-bold text-slate-400 uppercase tracking-widest mb-6"><span>Frage {room.currentQuestionIndex+1}</span><span className="text-[#E69F00]">Persönliche Punkte: {player.score}</span></div>
-        {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-40 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 mb-6"/>}
+        <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest mb-6">
+            <span>Frage {room.currentQuestionIndex+1}</span>
+            {/* NEU: JOKER BADGE FÜR SPIELER */}
+            {q.isJoker && <span className="text-amber-500 font-black animate-pulse bg-amber-50 px-2 py-1 rounded">🌟 2 PUNKTE</span>}
+            <span className="text-[#E69F00]">Punkte: {player.score}</span>
+        </div>
+        
+        {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <img src={q.imgUrl} className="w-full h-40 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 mb-6"/>}
+        {q.imgUrl && q.showImg && (getMediaType(q.imgUrl) === 'youtube' || getMediaType(q.imgUrl) === 'audio') && (
+           <div className="w-full h-32 bg-slate-800 rounded-xl flex flex-col items-center justify-center text-sky-400 shadow-sm mb-6 border border-slate-700">
+              <Play size={32} className="mb-2 opacity-50"/>
+              <span className="text-sm font-bold uppercase tracking-widest">Achtung Beamer</span>
+              <span className="text-xs text-slate-400 mt-1">Audio / Video läuft beim Quizmaster</span>
+           </div>
+        )}
+
         <h2 className="text-2xl font-bold mb-10">{q.q}</h2>
         
         {room.status === 'active' && !room.buzzerWinner && (
@@ -905,7 +1025,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
         
         {room.status === 'revealed' && typeof player.wasCorrect === 'boolean' && (
             <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-slate-50 border-sky-100 text-slate-400'}`}>
-                <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für dich!':'Leider kein Punkt.'}</h3>
+                <h3 className="text-2xl font-bold">{player.wasCorrect ? (q.isJoker ? '🌟 2 Punkte für euch!' : 'Punkt für euch!') : 'Leider kein Punkt.'}</h3>
             </div>
         )}
       </div>
@@ -916,10 +1036,11 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
     <div className="max-w-md mx-auto space-y-6 text-slate-700">
       <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
         <span>Frage {room.currentQuestionIndex+1}</span>
+        {/* NEU: JOKER BADGE FÜR SPIELER */}
+        {q.isJoker && <span className="text-amber-500 font-black animate-pulse bg-amber-50 px-2 py-1 rounded">🌟 2 PUNKTE</span>}
         {q.timer === 0 && <span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> ∞</span>}
       </div>
 
-      {/* NEUER GROSSER TIMER */}
       {q.timer > 0 && room.status === 'active' && !timeIsUp && (
         <div className="flex justify-center my-4">
            <div className={`flex items-center gap-3 px-8 py-3 rounded-full border-4 shadow-lg font-mono text-4xl font-bold transition-all duration-300 ${room.timeLeft <= 5 ? 'bg-red-50 border-red-500 text-red-600 animate-pulse scale-110' : 'bg-white border-sky-100 text-[#E69F00]'}`}>
@@ -929,7 +1050,15 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
       )}
 
       <h2 className="text-2xl font-bold leading-tight">{q.q}</h2>
-      {q.imgUrl && q.showImg && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
+      
+      {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
+      {q.imgUrl && q.showImg && (getMediaType(q.imgUrl) === 'youtube' || getMediaType(q.imgUrl) === 'audio') && (
+         <div className="w-full h-32 bg-slate-800 rounded-xl flex flex-col items-center justify-center text-sky-400 shadow-sm mb-6 border border-slate-700">
+            <Play size={32} className="mb-2 opacity-50"/>
+            <span className="text-sm font-bold uppercase tracking-widest">Achtung Beamer</span>
+            <span className="text-xs text-slate-400 mt-1">Audio / Video läuft beim Quizmaster</span>
+         </div>
+      )}
       
       {room.status === 'active' && !hasAnswered && !timeIsUp && (
         <div className="space-y-3 pt-4">
@@ -956,7 +1085,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz }) {
       
       {room.status === 'revealed' && (q.type !== 'text' || player.corrected) && typeof player.wasCorrect === 'boolean' && (
          <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
-             <h3 className="text-2xl font-bold">{player.wasCorrect?'Punkt für dich!':'Leider kein Punkt.'}</h3>
+             <h3 className="text-2xl font-bold">{player.wasCorrect ? (q.isJoker ? '🌟 2 Punkte für euch!' : 'Punkt für euch!') : 'Leider kein Punkt.'}</h3>
              {q.type === 'estimation' && <p className="mt-2 text-sm text-slate-600 font-bold bg-white inline-block px-4 py-1 rounded-full border border-slate-200">Lösung: {q.correctValue}</p>}
          </div>
       )}
