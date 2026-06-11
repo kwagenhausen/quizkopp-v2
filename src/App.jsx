@@ -662,7 +662,13 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   
   const [showBuzzerAnswer, setShowBuzzerAnswer] = useState(false);
   const [numTeams, setNumTeams] = useState(2); 
+
+  // --- NEU: DRAG & DROP FÜR DEN SIMULATOR ---
   const [showSimulator, setShowSimulator] = useState(false);
+  const [simPos, setSimPos] = useState({ 
+    x: typeof window !== 'undefined' ? window.innerWidth - 420 : 800, 
+    y: 80 
+  });
 
   useEffect(() => {
     setShowBuzzerAnswer(false);
@@ -680,6 +686,29 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         await deleteDoc(doc(db, 'players', demoId));
         setShowSimulator(false);
     }
+  };
+
+  const handleDragStart = (e) => {
+    e.preventDefault(); // Verhindert Markieren von Text
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origX = simPos.x;
+    const origY = simPos.y;
+
+    const handleDrag = (moveEvent) => {
+      setSimPos({
+        x: origX + (moveEvent.clientX - startX),
+        y: origY + (moveEvent.clientY - startY)
+      });
+    };
+
+    const handleDrop = () => {
+      window.removeEventListener('mousemove', handleDrag);
+      window.removeEventListener('mouseup', handleDrop);
+    };
+
+    window.addEventListener('mousemove', handleDrag);
+    window.addEventListener('mouseup', handleDrop);
   };
 
   const demoPlayer = players.find(p => p.id === 'demo_' + room.id);
@@ -758,10 +787,15 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   const renderSimulatorAndButton = () => (
     <>
       {showSimulator && demoPlayer && (
-        <div className="fixed bottom-24 right-6 lg:left-6 lg:right-auto w-[360px] h-[700px] max-h-[80vh] bg-white rounded-[2.5rem] border-[12px] border-slate-800 shadow-2xl overflow-hidden z-[100] flex flex-col transition-all">
-            <div className="bg-slate-800 text-white text-center py-2 text-xs font-bold tracking-widest relative flex-shrink-0">
-                REGIE-MONITOR (DEMO)
-                <button onClick={toggleSimulator} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-400"><XCircle size={16}/></button>
+        <div className="fixed w-[360px] h-[700px] max-h-[80vh] bg-white rounded-[2.5rem] border-[12px] border-slate-800 shadow-2xl overflow-hidden z-[100] flex flex-col"
+             style={{ left: `${simPos.x}px`, top: `${simPos.y}px` }}>
+            <div 
+                className="bg-slate-800 text-white text-center py-3 text-xs font-bold tracking-widest relative flex-shrink-0 cursor-move select-none hover:bg-slate-700 transition-colors"
+                onMouseDown={handleDragStart}
+                title="Gedrückt halten zum Verschieben"
+            >
+                <span className="opacity-50 mr-2">⋮⋮</span> REGIE-MONITOR (DEMO) <span className="opacity-50 ml-2">⋮⋮</span>
+                <button onClick={toggleSimulator} onMouseDown={e => e.stopPropagation()} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-400 cursor-pointer"><XCircle size={16}/></button>
             </div>
             <div className="flex-1 overflow-y-auto bg-[#F0F9FF] p-4 relative custom-scrollbar">
                 <PlayerDashboard room={room} player={demoPlayer} players={players} 
