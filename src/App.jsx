@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload } from 'lucide-react';
+import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload, Smartphone } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
@@ -500,7 +500,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   };
 
   const downloadCsvTemplate = () => {
-    // HEADER WURDE UM NOTIZ ERWEITERT
     const headers = "Typ;Frage;Option 1;Option 2;Option 3;Option 4;Lösung;Timer;Bild/Video/Audio URL;Notiz\n";
     const example1 = "multiple;Wie hoch ist der Eiffelturm?;300m;330m;350m;400m;2;30;;Der Eiffelturm wurde 1889 zur Weltausstellung erbaut.\n";
     const example2 = "text;Wer schrieb Faust?;-;-;-;-;Goethe;30;;\n";
@@ -546,7 +545,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
           showImg: true,
           showAnswers: true,
           isJoker: false,
-          note: cols[9] || "" // NEU: NOTIZ FELD AUS CSV ÜBERNEHMEN
+          note: cols[9] || ""
         };
 
         newQuestions.push(parsedQ);
@@ -643,7 +642,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
             <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.correctValue} onChange={e=>update(i,'correctValue',e.target.value)} placeholder={q.type === 'estimation' ? "Korrekte Zahl..." : "Korrekte Lösung (für dich zur Info)..."} />
           )}
 
-          {/* NEU: NOTIZ FELD */}
           {q.type !== 'break' && (
             <textarea placeholder="Optional: Hintergrundinfo / Fun Fact zur Auflösung..." className="w-full bg-slate-50 p-3 rounded-xl border border-sky-50 text-slate-700 text-sm mt-4 resize-none h-20 outline-none focus:border-sky-200" value={q.note || ''} onChange={e=>update(i,'note',e.target.value)} />
           )}
@@ -664,6 +662,27 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   
   const [showBuzzerAnswer, setShowBuzzerAnswer] = useState(false);
   const [numTeams, setNumTeams] = useState(2); 
+
+  // --- NEU: DEMO-MODUS (HANDY SIMULATOR) STATE & FUNKTION ---
+  const [showSimulator, setShowSimulator] = useState(false);
+
+  const toggleSimulator = async () => {
+    const demoId = 'demo_' + room.id;
+    if (!showSimulator) {
+        // Erzeuge Demo-Spieler in der DB
+        await setDoc(doc(db, 'players', demoId), {
+            name: '📱 Demo Tester', team: 'Test Team', roomCode: room.id, 
+            score: 0, currentAnswer: null, answers: {}, jokerUsed: false, jokerQuestion: null
+        });
+        setShowSimulator(true);
+    } else {
+        // Entferne Demo-Spieler
+        await deleteDoc(doc(db, 'players', demoId));
+        setShowSimulator(false);
+    }
+  };
+
+  const demoPlayer = players.find(p => p.id === 'demo_' + room.id);
 
   useEffect(() => {
     setShowBuzzerAnswer(false);
@@ -749,17 +768,43 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">{p.name} {p.team && <span className="text-sm font-normal text-slate-400 ml-1">({p.team})</span>}</span>)}</div>
         
         {players.length > 0 && (
-          <div className="mt-12 pt-8 border-t border-sky-100">
-            <h4 className="mb-4 font-bold text-xl text-slate-500">🎲 Zufällige Teams auslosen</h4>
-            <div className="flex items-center justify-center gap-4">
-                <span className="text-slate-400 font-medium">Anzahl Teams:</span>
-                <input type="number" min="2" max="20" value={numTeams} onChange={e => setNumTeams(parseInt(e.target.value) || 2)} className="w-20 bg-slate-50 p-3 rounded-xl border border-sky-100 text-center font-bold text-lg outline-none focus:border-[#E69F00]" />
-                <button onClick={generateRandomTeams} className="bg-sky-500 text-white px-6 py-3 rounded-xl font-bold shadow-md hover:bg-sky-600 transition-colors">Auslosen!</button>
+          <div className="mt-12 pt-8 border-t border-sky-100 flex flex-col md:flex-row items-center justify-between gap-6">
+            <div>
+                <h4 className="mb-4 font-bold text-xl text-slate-500">🎲 Zufällige Teams auslosen</h4>
+                <div className="flex items-center gap-4">
+                    <span className="text-slate-400 font-medium">Anzahl Teams:</span>
+                    <input type="number" min="2" max="20" value={numTeams} onChange={e => setNumTeams(parseInt(e.target.value) || 2)} className="w-20 bg-slate-50 p-3 rounded-xl border border-sky-100 text-center font-bold text-lg outline-none focus:border-[#E69F00]" />
+                    <button onClick={generateRandomTeams} className="bg-sky-500 text-white px-6 py-3 rounded-xl font-bold shadow-md hover:bg-sky-600 transition-colors">Auslosen!</button>
+                </div>
+            </div>
+            
+            {/* NEU: DEMO BUTTON AUCH IN DER LOBBY */}
+            <div className="border-l border-sky-100 pl-6 hidden md:block">
+                <button onClick={toggleSimulator} className="flex items-center gap-2 bg-slate-800 text-white px-6 py-3 rounded-xl font-bold shadow-md hover:bg-slate-700 transition-colors">
+                    <Smartphone size={20}/> Demo-Handy
+                </button>
             </div>
           </div>
         )}
       </div>
       <button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-500 text-white px-24 py-8 rounded-full text-4xl font-bold shadow-xl transition-all mt-10">Quiz starten!</button>
+      
+      {/* RENDER SIMULATOR */}
+      {showSimulator && demoPlayer && (
+        <div className="fixed bottom-24 left-6 w-[360px] h-[700px] max-h-[80vh] bg-white rounded-[2.5rem] border-[12px] border-slate-800 shadow-2xl overflow-hidden z-[100] flex flex-col">
+            <div className="bg-slate-800 text-white text-center py-2 text-xs font-bold tracking-widest relative flex-shrink-0">
+                REGIE-MONITOR (DEMO)
+                <button onClick={toggleSimulator} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-400"><XCircle size={16}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto bg-[#F0F9FF] p-4 relative custom-scrollbar">
+                <PlayerDashboard room={room} player={demoPlayer} players={players} 
+                   onAnswer={async v => { await updateDoc(doc(db, 'players', demoPlayer.id), { currentAnswer: v, [`answers.${room.currentQuestionIndex}`]: v }); }}
+                   onBuzz={async (rt) => { if(!room.buzzerWinner && !(room.buzzerLockedOut || []).includes(demoPlayer.id)) { await updateDoc(doc(db,'rooms',room.id),{buzzerWinner: demoPlayer.id, buzzerWinnerName: demoPlayer.name, buzzerReaction: rt}); } }}
+                   onUseJoker={async () => { if(window.confirm("Bist du sicher?")) { await updateDoc(doc(db, 'players', demoPlayer.id), { jokerUsed: true, jokerQuestion: room.currentQuestionIndex }); } }}
+                />
+            </div>
+        </div>
+      )}
     </div>
   );
   
@@ -777,6 +822,23 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         </div>
       ))}
       <button onClick={()=>downloadCSV(players,room)} className="w-full bg-white border border-sky-100 py-6 rounded-3xl flex items-center justify-center gap-4 text-2xl font-bold mt-12 shadow-md text-slate-700 relative z-10"><Download size={32}/> Excel-Export (CSV)</button>
+
+      {/* RENDER SIMULATOR */}
+      {showSimulator && demoPlayer && (
+        <div className="fixed bottom-24 left-6 w-[360px] h-[700px] max-h-[80vh] bg-white rounded-[2.5rem] border-[12px] border-slate-800 shadow-2xl overflow-hidden z-[100] flex flex-col">
+            <div className="bg-slate-800 text-white text-center py-2 text-xs font-bold tracking-widest relative flex-shrink-0">
+                REGIE-MONITOR (DEMO)
+                <button onClick={toggleSimulator} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-400"><XCircle size={16}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto bg-[#F0F9FF] p-4 relative custom-scrollbar">
+                <PlayerDashboard room={room} player={demoPlayer} players={players} 
+                   onAnswer={async v => { await updateDoc(doc(db, 'players', demoPlayer.id), { currentAnswer: v, [`answers.${room.currentQuestionIndex}`]: v }); }}
+                   onBuzz={async (rt) => { if(!room.buzzerWinner && !(room.buzzerLockedOut || []).includes(demoPlayer.id)) { await updateDoc(doc(db,'rooms',room.id),{buzzerWinner: demoPlayer.id, buzzerWinnerName: demoPlayer.name, buzzerReaction: rt}); } }}
+                   onUseJoker={async () => { if(window.confirm("Bist du sicher?")) { await updateDoc(doc(db, 'players', demoPlayer.id), { jokerUsed: true, jokerQuestion: room.currentQuestionIndex }); } }}
+                />
+            </div>
+        </div>
+      )}
     </div>
   );
 
@@ -800,6 +862,33 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         <button onClick={onNext} className="w-full bg-emerald-500 text-white px-8 py-6 rounded-3xl text-3xl font-bold shadow-xl hover:scale-[1.02] transition-all">
           {isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Runde starten'}
         </button>
+
+        {/* RENDER SIMULATOR */}
+        {showSimulator && demoPlayer && (
+            <div className="fixed bottom-24 left-6 w-[360px] h-[700px] max-h-[80vh] bg-white rounded-[2.5rem] border-[12px] border-slate-800 shadow-2xl overflow-hidden z-[100] flex flex-col">
+                <div className="bg-slate-800 text-white text-center py-2 text-xs font-bold tracking-widest relative flex-shrink-0">
+                    REGIE-MONITOR (DEMO)
+                    <button onClick={toggleSimulator} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-400"><XCircle size={16}/></button>
+                </div>
+                <div className="flex-1 overflow-y-auto bg-[#F0F9FF] p-4 relative custom-scrollbar">
+                    <PlayerDashboard room={room} player={demoPlayer} players={players} 
+                       onAnswer={async v => { await updateDoc(doc(db, 'players', demoPlayer.id), { currentAnswer: v, [`answers.${room.currentQuestionIndex}`]: v }); }}
+                       onBuzz={async (rt) => { if(!room.buzzerWinner && !(room.buzzerLockedOut || []).includes(demoPlayer.id)) { await updateDoc(doc(db,'rooms',room.id),{buzzerWinner: demoPlayer.id, buzzerWinnerName: demoPlayer.name, buzzerReaction: rt}); } }}
+                       onUseJoker={async () => { if(window.confirm("Bist du sicher?")) { await updateDoc(doc(db, 'players', demoPlayer.id), { jokerUsed: true, jokerQuestion: room.currentQuestionIndex }); } }}
+                    />
+                </div>
+            </div>
+        )}
+
+        {/* TOGGLE BUTTON FIXED */}
+        <div className="fixed bottom-6 right-6 bg-white px-6 py-3 rounded-2xl shadow-2xl border border-sky-100 flex items-center gap-3 z-50">
+            <button onClick={toggleSimulator} className={`p-2 rounded-xl transition-colors ${showSimulator ? 'bg-sky-100 text-sky-600' : 'text-slate-400 hover:bg-slate-50'}`} title="Handy-Simulator öffnen/schließen">
+                <Smartphone size={24}/>
+            </button>
+            <div className="w-px h-8 bg-sky-100 mx-2"></div>
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Raum-Code</span>
+            <span className="font-mono text-2xl font-bold text-[#E69F00]">{room.id}</span>
+        </div>
       </div>
     );
   }
@@ -927,7 +1016,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               })}
             </div>}
 
-            {/* NEU: DIE NOTIZ / FUN FACT ANZEIGE AUF DEM HOST BILDSCHIRM */}
             {room.status === 'revealed' && q.note && (
               <div className="bg-blue-50 border border-blue-200 p-8 rounded-2xl mb-6 mt-6 shadow-inner">
                 <p className="text-blue-600 font-bold uppercase tracking-widest mb-2 flex items-center gap-2">
@@ -940,7 +1028,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
           {(q.type !== 'buzzer' || room.status === 'revealed') && (
             <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
-              {room.status === 'active' ? 'Lösung' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
+              {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
         </div>
@@ -982,7 +1070,29 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         </div>
       </div>
 
+      {/* RENDER SIMULATOR */}
+      {showSimulator && demoPlayer && (
+        <div className="fixed bottom-24 left-6 w-[360px] h-[700px] max-h-[80vh] bg-white rounded-[2.5rem] border-[12px] border-slate-800 shadow-2xl overflow-hidden z-[100] flex flex-col">
+            <div className="bg-slate-800 text-white text-center py-2 text-xs font-bold tracking-widest relative flex-shrink-0">
+                REGIE-MONITOR (DEMO)
+                <button onClick={toggleSimulator} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-400"><XCircle size={16}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto bg-[#F0F9FF] p-4 relative custom-scrollbar">
+                <PlayerDashboard room={room} player={demoPlayer} players={players} 
+                   onAnswer={async v => { await updateDoc(doc(db, 'players', demoPlayer.id), { currentAnswer: v, [`answers.${room.currentQuestionIndex}`]: v }); }}
+                   onBuzz={async (rt) => { if(!room.buzzerWinner && !(room.buzzerLockedOut || []).includes(demoPlayer.id)) { await updateDoc(doc(db,'rooms',room.id),{buzzerWinner: demoPlayer.id, buzzerWinnerName: demoPlayer.name, buzzerReaction: rt}); } }}
+                   onUseJoker={async () => { if(window.confirm("Bist du sicher? Der Joker kann nur EINMAL pro Quiz eingesetzt werden!")) { await updateDoc(doc(db, 'players', demoPlayer.id), { jokerUsed: true, jokerQuestion: room.currentQuestionIndex }); } }}
+                />
+            </div>
+        </div>
+      )}
+
+      {/* TOGGLE BUTTON FIXED */}
       <div className="fixed bottom-6 right-6 bg-white px-6 py-3 rounded-2xl shadow-2xl border border-sky-100 flex items-center gap-3 z-50">
+        <button onClick={toggleSimulator} className={`p-2 rounded-xl transition-colors ${showSimulator ? 'bg-sky-100 text-sky-600' : 'text-slate-400 hover:bg-slate-50'}`} title="Handy-Simulator öffnen/schließen">
+            <Smartphone size={24}/>
+        </button>
+        <div className="w-px h-8 bg-sky-100 mx-2"></div>
         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Raum-Code</span>
         <span className="font-mono text-2xl font-bold text-[#E69F00]">{room.id}</span>
       </div>
@@ -1143,7 +1253,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
         
         {room.status === 'active' && room.buzzerWinner && room.buzzerWinner === player.id && <div className="py-12 bg-red-50 rounded-3xl border-2 border-red-500 animate-pulse text-3xl font-bold text-red-500 mt-8">DU BIST DRAN!</div>}
         
-        {/* NEU: GROSSE LÖSUNGSANZEIGE & NOTIZ FÜR BUZZER AUF SPIELER HANDY */}
         {room.status === 'revealed' && typeof player.wasCorrect === 'boolean' && (
             <div className="mt-8 space-y-4">
                 <div className={`py-10 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
@@ -1222,7 +1331,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
           </div>
       )}
       
-      {/* NEU: GROSSE LÖSUNGSANZEIGE & NOTIZ AUF SPIELER HANDY (Standard Runden) */}
       {room.status === 'revealed' && (q.type !== 'text' || player.corrected) && typeof player.wasCorrect === 'boolean' && (
          <div className="mt-8 space-y-4">
              <div className={`py-10 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
