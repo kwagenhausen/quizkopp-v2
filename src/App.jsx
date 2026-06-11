@@ -177,6 +177,7 @@ export default function App() {
 
   useEffect(() => {
     let interval;
+    // Der Timer wird nur vom Host heruntergezählt, um asynchrone Sprünge zu vermeiden
     if (role === 'host' && activeRoom?.status === 'active' && activeRoom?.timeLeft > 0 && !activeRoom?.buzzerWinner) {
       interval = setInterval(async () => {
         const newTime = activeRoom.timeLeft - 1;
@@ -317,13 +318,13 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#F0F9FF] text-[#1E293B] font-sans">
       <header className="bg-white border-b border-sky-100 p-4 sticky top-0 z-10 shadow-sm">
-        <div className={role === 'host' ? "w-full max-w-[1920px] mx-auto px-4 flex justify-between items-center" : "max-w-4xl mx-auto flex justify-between items-center"}>
-          <div className="flex items-center gap-2"><Trophy className="text-[#E69F00]"/><h1 className="text-xl font-bold italic">Die Quizkopp App</h1></div>
+        <div className={(role === 'host' || role === 'beamer') ? "w-full max-w-[1920px] mx-auto px-4 flex justify-between items-center" : "max-w-4xl mx-auto flex justify-between items-center"}>
+          <div className="flex items-center gap-2"><Trophy className="text-[#E69F00]"/><h1 className="text-xl font-bold italic">Die Quizkopp App {role === 'beamer' && <span className="text-slate-300 font-normal ml-2">| Beamer</span>}</h1></div>
           {role && <button onClick={() => { if(role==='host') deleteDoc(doc(db,'rooms',currentRoomCode)); setRole(null); setCurrentRoomCode(''); }} className="text-slate-400 hover:text-red-500 transition-colors"><LogOut size={20}/></button>}
         </div>
       </header>
 
-      <main className={role === 'host' ? "w-full max-w-[1920px] mx-auto p-4 lg:p-8 relative" : "max-w-4xl mx-auto p-4 py-8 relative"}>
+      <main className={(role === 'host' || role === 'beamer') ? "w-full max-w-[1920px] mx-auto p-4 lg:p-8 relative" : "max-w-4xl mx-auto p-4 py-8 relative"}>
         {!role && !adminAuth && <LoginView allPlayers={allPlayers} onJoin={async (c, n, t) => {
             const roomCode = c.toUpperCase();
             const playerName = n.trim();
@@ -343,7 +344,11 @@ export default function App() {
                 await setDoc(doc(db,'players',user.uid),{name:playerName, team:t, roomCode:roomCode, score:0, currentAnswer:null, answers:{}, jokerUsed: false, jokerQuestion: null});
             }
             setCurrentRoomCode(roomCode); setRole('player');
-        }} onAdmin={() => setAdminAuth('login')}/>}
+        }} onAdmin={() => setAdminAuth('login')} onJoinBeamer={(c) => {
+            const roomCode = c.toUpperCase();
+            if(!allRooms.find(r=>r.id===roomCode)) return alert("Raum nicht gefunden!");
+            setCurrentRoomCode(roomCode); setRole('beamer');
+        }} />}
 
         {adminAuth === 'login' && <AdminLogin onOk={pw => pw === ADMIN_PASSWORD ? setAdminAuth(true) : alert("Falsch!")} onBack={() => setAdminAuth(false)}/>}
         
@@ -353,7 +358,8 @@ export default function App() {
         
         {role === 'lib' && <Library onSelect={x => createRoom(x.questions, x.allowJokers)} onEdit={quiz => { setEditingQuiz(quiz); setRole('setup'); }} onBack={() => setRole(null)} db={db}/>}
 
-        {role === 'host' && activeRoom && <HostDashboard room={activeRoom} players={players} onReveal={revealAnswer} onNext={async () => {
+        {/* HOST DASHBOARD - DUAL USE FÜR HOST UND BEAMER */}
+        {(role === 'host' || role === 'beamer') && activeRoom && <HostDashboard room={activeRoom} players={players} isBeamer={role === 'beamer'} onReveal={revealAnswer} onNext={async () => {
             const last = activeRoom.currentQuestionIndex >= activeRoom.questions.length -1;
             const nextIdx = activeRoom.currentQuestionIndex + 1;
             const batch = writeBatch(db);
@@ -387,7 +393,7 @@ export default function App() {
   );
 }
 
-function LoginView({ allPlayers, onJoin, onAdmin }) {
+function LoginView({ allPlayers, onJoin, onAdmin, onJoinBeamer }) {
   const [c, setC] = useState(''); 
   const [n, setN] = useState('');
   const [t, setT] = useState(''); 
@@ -422,7 +428,11 @@ function LoginView({ allPlayers, onJoin, onAdmin }) {
         
         <button onClick={() => onJoin(c, n, t)} disabled={!c || !n} className="w-full bg-[#E69F00] text-white py-4 rounded-xl font-bold text-lg hover:bg-[#D49100] transition-colors shadow-md disabled:opacity-50 mt-4">Jetzt beitreten</button>
       </div>
-      <button onClick={onAdmin} className="mt-20 text-slate-300 hover:text-slate-500 text-xs">Admin-Zentrale</button>
+      
+      <div className="flex justify-between mt-20 text-slate-300 text-xs px-4">
+          <button onClick={() => { if(c.length === 4) onJoinBeamer(c); else alert("Bitte 4-stelligen Raum-Code oben eintragen!"); }} className="hover:text-slate-500 font-bold transition-colors">📺 Als Beamer beitreten</button>
+          <button onClick={onAdmin} className="hover:text-slate-500 transition-colors">Admin-Zentrale</button>
+      </div>
     </div>
   );
 }
@@ -499,7 +509,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
     }
   };
 
-  // --- NEU: GLOBALE AKTIONEN ---
   const applyGlobal = (field, value) => {
       const actionName = field === 'showAnswers' ? 'Antworten auf Beamer' : 'Bilder/Medien auf Handys';
       const statusName = value ? 'AN' : 'AUS';
@@ -602,7 +611,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
             </div>
           </div>
           
-          {/* NEU: GLOBALE AKTIONEN MENÜ */}
           <div className="flex flex-wrap items-center gap-3 pt-4 border-t border-sky-50">
               <span className="text-xs font-bold text-slate-400 uppercase">Globale Aktionen:</span>
               <button onClick={() => applyGlobal('showAnswers', true)} className="text-xs bg-slate-50 hover:bg-sky-50 text-slate-600 px-3 py-2 rounded-lg border border-slate-200 transition-colors">👁️ Alle Antworten zeigen</button>
@@ -677,8 +685,9 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   );
 }
 
-function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCorrect, db }) {
+function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCorrect, db, isBeamer = false }) {
   const q = room.questions[room.currentQuestionIndex];
+  const nextQ = room.questions[room.currentQuestionIndex + 1]; // VORSCHAU AUF DIE NÄCHSTE FRAGE
   const isLastQuestion = room.currentQuestionIndex >= room.questions.length - 1;
   const sortedTeams = getSortedTeams(players, room);
   
@@ -846,7 +855,8 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700"><Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})</h3>
         <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">{p.name} {p.team && <span className="text-sm font-normal text-slate-400 ml-1">({p.team})</span>}</span>)}</div>
         
-        {players.length > 0 && (
+        {/* BEAMER SIEHT KEIN RANDOM TEAM GENERATOR */}
+        {!isBeamer && players.length > 0 && (
           <div className="mt-12 pt-8 border-t border-sky-100 flex flex-col md:flex-row items-center justify-center gap-6">
             <div>
                 <h4 className="mb-4 font-bold text-xl text-slate-500">🎲 Zufällige Teams auslosen</h4>
@@ -859,9 +869,14 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
           </div>
         )}
       </div>
-      <button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-500 text-white px-24 py-8 rounded-full text-4xl font-bold shadow-xl transition-all mt-10">Quiz starten!</button>
       
-      {renderSimulatorAndButton()}
+      {!isBeamer ? (
+        <button onClick={()=>updateDoc(doc(db,'rooms',room.id),{status:'active'})} disabled={players.length===0} className="bg-emerald-500 text-white px-24 py-8 rounded-full text-4xl font-bold shadow-xl transition-all mt-10">Quiz starten!</button>
+      ) : (
+        <p className="text-xl text-slate-400 mt-10 animate-pulse font-bold uppercase tracking-widest">Warte auf Quizmaster...</p>
+      )}
+      
+      {!isBeamer && renderSimulatorAndButton()}
     </div>
   );
   
@@ -878,9 +893,9 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
           <span className="font-mono text-4xl bg-slate-50 px-6 py-2 rounded-xl text-[#E69F00]">{t.totalScore}</span>
         </div>
       ))}
-      <button onClick={()=>downloadCSV(players,room)} className="w-full bg-white border border-sky-100 py-6 rounded-3xl flex items-center justify-center gap-4 text-2xl font-bold mt-12 shadow-md text-slate-700 relative z-10"><Download size={32}/> Excel-Export (CSV)</button>
+      {!isBeamer && <button onClick={()=>downloadCSV(players,room)} className="w-full bg-white border border-sky-100 py-6 rounded-3xl flex items-center justify-center gap-4 text-2xl font-bold mt-12 shadow-md text-slate-700 relative z-10"><Download size={32}/> Excel-Export (CSV)</button>}
 
-      {renderSimulatorAndButton()}
+      {!isBeamer && renderSimulatorAndButton()}
     </div>
   );
 
@@ -901,11 +916,15 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             </div>
         </div>
 
-        <button onClick={onNext} className="w-full bg-emerald-500 text-white px-8 py-6 rounded-3xl text-3xl font-bold shadow-xl hover:scale-[1.02] transition-all">
-          {isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Runde starten'}
-        </button>
+        {!isBeamer ? (
+            <button onClick={onNext} className="w-full bg-emerald-500 text-white px-8 py-6 rounded-3xl text-3xl font-bold shadow-xl hover:scale-[1.02] transition-all">
+            {isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Runde starten'}
+            </button>
+        ) : (
+            <p className="text-center text-slate-400 mt-8 animate-pulse font-bold uppercase tracking-widest">Warte auf Quizmaster...</p>
+        )}
 
-        {renderSimulatorAndButton()}
+        {!isBeamer && renderSimulatorAndButton()}
       </div>
     );
   }
@@ -957,7 +976,8 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                     </p>
                 )}
 
-                {q.correctValue && (
+                {/* HOST: SEHEN DIE VERSTECKTE LÖSUNG / BEAMER SIEHT NUR "QUIZMASTER ENTSCHEIDET" */}
+                {!isBeamer && q.correctValue && (
                     <div className="mb-8">
                         {!showBuzzerAnswer ? (
                             <button onClick={() => setShowBuzzerAnswer(true)} className="text-sm font-bold text-red-400 hover:text-red-600 underline transition-colors">
@@ -972,10 +992,14 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                     </div>
                 )}
 
-                <div className="flex gap-6 justify-center">
-                  <button onClick={()=>onBuzzerCorrect(false)} className="bg-white border border-red-200 text-red-500 hover:bg-red-500 hover:text-white px-8 py-5 rounded-2xl font-bold text-xl flex items-center gap-3 transition-colors"><XCircle size={28}/> Falsch</button>
-                  <button onClick={()=>onBuzzerCorrect(true)} className="bg-emerald-500 text-white px-8 py-5 rounded-2xl font-bold text-xl flex items-center gap-3"><CheckCircle size={28}/> Richtig</button>
-                </div>
+                {!isBeamer ? (
+                    <div className="flex gap-6 justify-center">
+                      <button onClick={()=>onBuzzerCorrect(false)} className="bg-white border border-red-200 text-red-500 hover:bg-red-500 hover:text-white px-8 py-5 rounded-2xl font-bold text-xl flex items-center gap-3 transition-colors"><XCircle size={28}/> Falsch</button>
+                      <button onClick={()=>onBuzzerCorrect(true)} className="bg-emerald-500 text-white px-8 py-5 rounded-2xl font-bold text-xl flex items-center gap-3"><CheckCircle size={28}/> Richtig</button>
+                    </div>
+                ) : (
+                    <p className="text-center text-red-400 font-bold uppercase tracking-widest mt-6 animate-pulse">Quizmaster entscheidet...</p>
+                )}
               </div>
             )}
 
@@ -1023,11 +1047,17 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                         </span>
                         <p className="text-2xl italic mt-1">"{p.currentAnswer||'---'}"</p>
                     </div>
-                    <div className="flex gap-2">
-                        <button onClick={()=>onCorrect(p.id, 0)} className={`p-4 rounded-xl shadow-sm transition-all ${p.corrected && p.currentAwardedPoints === 0 ? 'bg-red-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-red-500'}`} title="0 Punkte"><XCircle size={32}/></button>
-                        <button onClick={()=>onCorrect(p.id, 0.5)} className={`p-4 rounded-xl shadow-sm transition-all font-black text-2xl w-[64px] flex justify-center items-center ${p.corrected && p.currentAwardedPoints === 0.5 * mult ? 'bg-orange-400 text-white scale-105' : 'bg-white text-slate-300 hover:text-orange-400'}`} title={mult === 2 ? "0.5 Punkte (x2 Joker = 1 Punkt)" : "0.5 Punkte"}>½</button>
-                        <button onClick={()=>onCorrect(p.id, 1)} className={`p-4 rounded-xl shadow-sm transition-all ${p.corrected && p.currentAwardedPoints === 1 * mult ? 'bg-emerald-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-emerald-500'}`} title={mult === 2 ? "1 Punkt (x2 Joker = 2 Punkte)" : "1 Punkt"}><CheckCircle size={32}/></button>
-                    </div>
+                    {!isBeamer ? (
+                        <div className="flex gap-2">
+                            <button onClick={()=>onCorrect(p.id, 0)} className={`p-4 rounded-xl shadow-sm transition-all ${p.corrected && p.currentAwardedPoints === 0 ? 'bg-red-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-red-500'}`} title="0 Punkte"><XCircle size={32}/></button>
+                            <button onClick={()=>onCorrect(p.id, 0.5)} className={`p-4 rounded-xl shadow-sm transition-all font-black text-2xl w-[64px] flex justify-center items-center ${p.corrected && p.currentAwardedPoints === 0.5 * mult ? 'bg-orange-400 text-white scale-105' : 'bg-white text-slate-300 hover:text-orange-400'}`} title={mult === 2 ? "0.5 Punkte (x2 Joker = 1 Punkt)" : "0.5 Punkte"}>½</button>
+                            <button onClick={()=>onCorrect(p.id, 1)} className={`p-4 rounded-xl shadow-sm transition-all ${p.corrected && p.currentAwardedPoints === 1 * mult ? 'bg-emerald-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-emerald-500'}`} title={mult === 2 ? "1 Punkt (x2 Joker = 2 Punkte)" : "1 Punkt"}><CheckCircle size={32}/></button>
+                        </div>
+                    ) : (
+                        <div className="flex items-center justify-center font-black text-2xl">
+                           {p.corrected ? (p.currentAwardedPoints > 0 ? <span className="text-emerald-500 font-bold">+{p.currentAwardedPoints}</span> : <span className="text-red-500 font-bold">0</span>) : <span className="text-slate-300 animate-pulse font-bold text-sm uppercase">Wartet...</span>}
+                        </div>
+                    )}
                   </div>
                 )
               })}
@@ -1043,7 +1073,21 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             )}
           </div>
 
-          {(q.type !== 'buzzer' || room.status === 'revealed') && (
+          {/* NEU: DIE VORSCHAU BOX FÜR DEN HOST (NUR FÜR HOST SICHTBAR) */}
+          {!isBeamer && nextQ && room.status === 'revealed' && (
+              <div className="bg-slate-800 p-6 rounded-3xl mb-4 text-white shadow-inner flex items-center justify-between border-l-4 border-sky-400">
+                  <div>
+                      <span className="text-sky-400 font-bold text-xs uppercase tracking-widest block mb-1">🔜 Regie-Vorschau: Nächste Frage</span>
+                      <p className="font-medium text-lg truncate max-w-xl">{nextQ.q || (nextQ.type === 'break' ? '⏸️ Pause / Zwischenstand' : '---')}</p>
+                  </div>
+                  <div className="text-right ml-4">
+                      <span className="bg-slate-700 text-slate-300 px-3 py-1 rounded-lg text-xs font-bold uppercase block mb-1">{nextQ.type}</span>
+                      {nextQ.isJoker && <span className="text-amber-400 text-xs font-bold uppercase">🌟 Joker</span>}
+                  </div>
+              </div>
+          )}
+
+          {!isBeamer && (q.type !== 'buzzer' || room.status === 'revealed') && (
             <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
               {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
@@ -1087,7 +1131,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         </div>
       </div>
 
-      {renderSimulatorAndButton()}
+      {!isBeamer && renderSimulatorAndButton()}
     </>
   );
 }
