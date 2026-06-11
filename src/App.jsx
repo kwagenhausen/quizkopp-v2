@@ -499,6 +499,15 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
     }
   };
 
+  // --- NEU: GLOBALE AKTIONEN ---
+  const applyGlobal = (field, value) => {
+      const actionName = field === 'showAnswers' ? 'Antworten auf Beamer' : 'Bilder/Medien auf Handys';
+      const statusName = value ? 'AN' : 'AUS';
+      if (window.confirm(`Möchtest du die Einstellung "${actionName}" für ALLE ${qs.length} Fragen auf "${statusName}" setzen?`)) {
+          setQs(qs.map(q => ({ ...q, [field]: value })));
+      }
+  };
+
   const downloadCsvTemplate = () => {
     const headers = "Typ;Frage;Option 1;Option 2;Option 3;Option 4;Lösung;Timer;Bild/Video/Audio URL;Notiz\n";
     const example1 = "multiple;Wie hoch ist der Eiffelturm?;300m;330m;350m;400m;2;30;;Der Eiffelturm wurde 1889 zur Weltausstellung erbaut.\n";
@@ -579,15 +588,28 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
       </div>
 
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between bg-white p-6 rounded-3xl border border-sky-100 shadow-sm">
-        <input placeholder="Quiz-Name" className="bg-transparent text-2xl font-bold border-b border-sky-200 flex-1 outline-none w-full" value={title} onChange={e=>setTitle(e.target.value)}/>
-        <div className="flex items-center gap-4 flex-wrap w-full sm:w-auto">
-            <div className="flex items-center gap-2 text-sm font-bold text-amber-600 bg-amber-50 px-4 py-2 rounded-xl border border-amber-200 w-full sm:w-auto justify-between">
-                <label>🌟 Joker-Modus für dieses Quiz?</label>
-                <input type="checkbox" className="w-5 h-5 accent-amber-500" checked={allowJokers} onChange={e=>setAllowJokers(e.target.checked)}/>
+        <div className="w-full space-y-4">
+          <div className="flex flex-col sm:flex-row gap-4 justify-between">
+            <input placeholder="Quiz-Name" className="bg-transparent text-2xl font-bold border-b border-sky-200 flex-1 outline-none w-full" value={title} onChange={e=>setTitle(e.target.value)}/>
+            <div className="flex items-center gap-4 flex-wrap w-full sm:w-auto">
+                <div className="flex items-center gap-2 text-sm font-bold text-amber-600 bg-amber-50 px-4 py-2 rounded-xl border border-amber-200 w-full sm:w-auto justify-between">
+                    <label>🌟 Joker-Modus für dieses Quiz?</label>
+                    <input type="checkbox" className="w-5 h-5 accent-amber-500" checked={allowJokers} onChange={e=>setAllowJokers(e.target.checked)}/>
+                </div>
+                <button onClick={saveToLib} className="bg-white p-3 rounded-xl border border-sky-100 shadow-sm flex items-center justify-center gap-2 text-slate-600 font-bold hover:bg-slate-50 transition-colors w-full sm:w-auto">
+                    <Save size={20} className="text-[#E69F00]"/> {initialQuiz ? 'Aktualisieren' : 'Speichern'}
+                </button>
             </div>
-            <button onClick={saveToLib} className="bg-white p-3 rounded-xl border border-sky-100 shadow-sm flex items-center justify-center gap-2 text-slate-600 font-bold hover:bg-slate-50 transition-colors w-full sm:w-auto">
-                <Save size={20} className="text-[#E69F00]"/> {initialQuiz ? 'Aktualisieren' : 'Speichern'}
-            </button>
+          </div>
+          
+          {/* NEU: GLOBALE AKTIONEN MENÜ */}
+          <div className="flex flex-wrap items-center gap-3 pt-4 border-t border-sky-50">
+              <span className="text-xs font-bold text-slate-400 uppercase">Globale Aktionen:</span>
+              <button onClick={() => applyGlobal('showAnswers', true)} className="text-xs bg-slate-50 hover:bg-sky-50 text-slate-600 px-3 py-2 rounded-lg border border-slate-200 transition-colors">👁️ Alle Antworten zeigen</button>
+              <button onClick={() => applyGlobal('showAnswers', false)} className="text-xs bg-slate-50 hover:bg-red-50 text-slate-600 hover:text-red-600 px-3 py-2 rounded-lg border border-slate-200 transition-colors">🙈 Alle Antworten verbergen</button>
+              <button onClick={() => applyGlobal('showImg', true)} className="text-xs bg-slate-50 hover:bg-sky-50 text-slate-600 px-3 py-2 rounded-lg border border-slate-200 transition-colors">📱 Alle Bilder aufs Handy</button>
+              <button onClick={() => applyGlobal('showImg', false)} className="text-xs bg-slate-50 hover:bg-red-50 text-slate-600 hover:text-red-600 px-3 py-2 rounded-lg border border-slate-200 transition-colors">🚫 Keine Bilder aufs Handy</button>
+          </div>
         </div>
       </div>
       
@@ -662,8 +684,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   
   const [showBuzzerAnswer, setShowBuzzerAnswer] = useState(false);
   const [numTeams, setNumTeams] = useState(2); 
-
-  // --- NEU: DRAG & DROP FÜR DEN SIMULATOR ---
   const [showSimulator, setShowSimulator] = useState(false);
   const [simPos, setSimPos] = useState({ 
     x: typeof window !== 'undefined' ? window.innerWidth - 420 : 800, 
@@ -689,7 +709,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   };
 
   const handleDragStart = (e) => {
-    e.preventDefault(); // Verhindert Markieren von Text
+    e.preventDefault(); 
     const startX = e.clientX;
     const startY = e.clientY;
     const origX = simPos.x;
