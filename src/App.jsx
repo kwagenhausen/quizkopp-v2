@@ -473,7 +473,7 @@ function Library({ onSelect, onEdit, onBack, db }) {
 function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   const [title, setTitle] = useState(initialQuiz ? initialQuiz.title : '');
   const [allowJokers, setAllowJokers] = useState(initialQuiz ? initialQuiz.allowJokers !== false : true);
-  const [qs, setQs] = useState(initialQuiz ? initialQuiz.questions : [{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false}]);
+  const [qs, setQs] = useState(initialQuiz ? initialQuiz.questions : [{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false, note: ''}]);
   
   const fileInputRef = useRef(null);
 
@@ -500,12 +500,13 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   };
 
   const downloadCsvTemplate = () => {
-    const headers = "Typ;Frage;Option 1;Option 2;Option 3;Option 4;Lösung;Timer;Bild URL\n";
-    const example1 = "multiple;Wie hoch ist der Eiffelturm?;300m;330m;350m;400m;2;30;\n";
-    const example2 = "text;Wer schrieb Faust?;-;-;-;-;Goethe;30;\n";
-    const example3 = "estimation;Wie alt wurde die älteste Schildkröte?;-;-;-;-;188;30;\n";
-    const example4 = "buzzer;Erkenne dieses Lied (Audio läuft über Beamer);-;-;-;-;Queen - Bohemian Rhapsody;0;/song1.mp3\n";
-    const example5 = "break;Ende von Runde 1 - Zwischenstand!;-;-;-;-;-;0;\n";
+    // HEADER WURDE UM NOTIZ ERWEITERT
+    const headers = "Typ;Frage;Option 1;Option 2;Option 3;Option 4;Lösung;Timer;Bild/Video/Audio URL;Notiz\n";
+    const example1 = "multiple;Wie hoch ist der Eiffelturm?;300m;330m;350m;400m;2;30;;Der Eiffelturm wurde 1889 zur Weltausstellung erbaut.\n";
+    const example2 = "text;Wer schrieb Faust?;-;-;-;-;Goethe;30;;\n";
+    const example3 = "estimation;Wie alt wurde die älteste Schildkröte?;-;-;-;-;188;30;;\n";
+    const example4 = "buzzer;Erkenne dieses Lied (Audio läuft über Beamer);-;-;-;-;Queen - Bohemian Rhapsody;0;/song1.mp3;\n";
+    const example5 = "break;Ende von Runde 1 - Zwischenstand!;-;-;-;-;-;0;;\n";
     
     const csvContent = "\uFEFF" + headers + example1 + example2 + example3 + example4 + example5;
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -544,7 +545,8 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
           imgUrl: cols[8] || "",
           showImg: true,
           showAnswers: true,
-          isJoker: false 
+          isJoker: false,
+          note: cols[9] || "" // NEU: NOTIZ FELD AUS CSV ÜBERNEHMEN
         };
 
         newQuestions.push(parsedQ);
@@ -640,10 +642,15 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
           {q.type !== 'multiple' && q.type !== 'break' && (
             <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.correctValue} onChange={e=>update(i,'correctValue',e.target.value)} placeholder={q.type === 'estimation' ? "Korrekte Zahl..." : "Korrekte Lösung (für dich zur Info)..."} />
           )}
+
+          {/* NEU: NOTIZ FELD */}
+          {q.type !== 'break' && (
+            <textarea placeholder="Optional: Hintergrundinfo / Fun Fact zur Auflösung..." className="w-full bg-slate-50 p-3 rounded-xl border border-sky-50 text-slate-700 text-sm mt-4 resize-none h-20 outline-none focus:border-sky-200" value={q.note || ''} onChange={e=>update(i,'note',e.target.value)} />
+          )}
         </div>
       ))}
       <div className="flex gap-4">
-        <button onClick={()=>setQs([...qs,{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false}])} className="flex-1 bg-white py-3 rounded-2xl border border-sky-100 font-bold shadow-sm text-slate-500">+ Frage hinzufügen</button>
+        <button onClick={()=>setQs([...qs,{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false, note: ''}])} className="flex-1 bg-white py-3 rounded-2xl border border-sky-100 font-bold shadow-sm text-slate-500">+ Frage hinzufügen</button>
         <button onClick={()=>onCreate(qs, allowJokers)} className="flex-1 bg-emerald-500 text-white py-3 rounded-2xl font-bold shadow-lg">Quiz starten</button>
       </div>
     </div>
@@ -805,7 +812,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             <div className="flex justify-between items-center mb-8">
                <div className="flex flex-wrap items-center gap-3">
                  <span className="text-lg font-bold text-slate-400 uppercase tracking-widest bg-slate-50 px-4 py-2 rounded-full border border-sky-50">Frage {room.currentQuestionIndex+1}/{room.questions.length}</span>
-                 {/* ZÄHLER FÜR VERBLEIBENDE JOKER */}
                  {room.allowJokers && (
                    <span className="text-sm font-bold text-amber-600 uppercase tracking-widest bg-amber-50 px-4 py-2 rounded-full border border-amber-200 shadow-sm">
                      🌟 {room.questions.slice(room.currentQuestionIndex).filter(qu => qu.isJoker).length} Joker-Fragen übrig
@@ -920,6 +926,16 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                 )
               })}
             </div>}
+
+            {/* NEU: DIE NOTIZ / FUN FACT ANZEIGE AUF DEM HOST BILDSCHIRM */}
+            {room.status === 'revealed' && q.note && (
+              <div className="bg-blue-50 border border-blue-200 p-8 rounded-2xl mb-6 mt-6 shadow-inner">
+                <p className="text-blue-600 font-bold uppercase tracking-widest mb-2 flex items-center gap-2">
+                   <MessageSquare size={20}/> Hintergrundinfo / Fun Fact
+                </p>
+                <p className="text-xl font-medium text-slate-700 leading-relaxed whitespace-pre-line">{q.note}</p>
+              </div>
+            )}
           </div>
 
           {(q.type !== 'buzzer' || room.status === 'revealed') && (
@@ -1056,12 +1072,9 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
     );
   }
 
-  // --- DIE NEUE JOKER BEREICHS LOGIK FÜR SPIELER ---
   const renderJokerArea = () => {
-      // Ist der Joker-Modus im Quiz überhaupt aktiviert?
       if (!room.allowJokers || room.status !== 'active') return null;
 
-      // Wenn der Spieler den Joker bereits gespielt hat
       if (player.jokerUsed) {
           if (isJokerActiveNow) {
               return (
@@ -1082,7 +1095,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
           }
       }
 
-      // Wenn die Frage keine Joker-Frage ist
       if (!q.isJoker) {
           return (
               <div className="mb-6">
@@ -1093,7 +1105,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
           );
       }
 
-      // Wenn der Joker verfügbar ist
       return (
         <div className="mb-6">
             <button onClick={onUseJoker} className="w-full bg-gradient-to-r from-amber-400 to-amber-500 text-white font-bold py-4 rounded-2xl shadow-lg hover:scale-[1.02] transition-transform flex items-center justify-center gap-2">
@@ -1132,9 +1143,27 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
         
         {room.status === 'active' && room.buzzerWinner && room.buzzerWinner === player.id && <div className="py-12 bg-red-50 rounded-3xl border-2 border-red-500 animate-pulse text-3xl font-bold text-red-500 mt-8">DU BIST DRAN!</div>}
         
+        {/* NEU: GROSSE LÖSUNGSANZEIGE & NOTIZ FÜR BUZZER AUF SPIELER HANDY */}
         {room.status === 'revealed' && typeof player.wasCorrect === 'boolean' && (
-            <div className={`py-12 rounded-3xl border-2 text-center mt-8 ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-slate-50 border-sky-100 text-slate-400'}`}>
-                <h3 className="text-2xl font-bold">{player.wasCorrect ? (isJokerActiveNow ? '🌟 2 Punkte für euch!' : 'Punkt für euch!') : 'Leider kein Punkt.'}</h3>
+            <div className="mt-8 space-y-4">
+                <div className={`py-10 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
+                    <h3 className="text-2xl font-bold">{player.wasCorrect ? (isJokerActiveNow ? '🌟 2 Punkte für euch!' : 'Punkt für euch!') : 'Leider kein Punkt.'}</h3>
+                    {q.correctValue && (
+                        <div className="mt-6">
+                            <span className="text-xs uppercase font-bold tracking-widest opacity-70 block mb-2 text-slate-500">Richtige Lösung:</span>
+                            <span className="text-2xl font-black bg-white px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-slate-800">
+                                {q.correctValue}
+                            </span>
+                        </div>
+                    )}
+                </div>
+
+                {q.note && (
+                    <div className="bg-blue-50 border border-blue-200 p-6 rounded-3xl text-left shadow-sm">
+                        <span className="text-xs uppercase font-bold tracking-widest text-blue-500 block mb-2">💡 Schon gewusst?</span>
+                        <p className="text-slate-700 text-sm leading-relaxed whitespace-pre-line">{q.note}</p>
+                    </div>
+                )}
             </div>
         )}
       </div>
@@ -1145,6 +1174,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
     <div className="max-w-md mx-auto space-y-6 text-slate-700">
       <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
         <span>Frage {room.currentQuestionIndex+1}</span>
+        {q.isJoker && <span className="text-amber-500 font-black animate-pulse bg-amber-50 px-2 py-1 rounded">🌟 2 PUNKTE</span>}
         {q.timer === 0 && <span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> ∞</span>}
       </div>
 
@@ -1192,10 +1222,26 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
           </div>
       )}
       
+      {/* NEU: GROSSE LÖSUNGSANZEIGE & NOTIZ AUF SPIELER HANDY (Standard Runden) */}
       {room.status === 'revealed' && (q.type !== 'text' || player.corrected) && typeof player.wasCorrect === 'boolean' && (
-         <div className={`py-12 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
-             <h3 className="text-2xl font-bold">{player.wasCorrect ? (isJokerActiveNow ? '🌟 2 Punkte für dich!' : 'Punkt für dich!') : 'Leider kein Punkt.'}</h3>
-             {q.type === 'estimation' && <p className="mt-2 text-sm text-slate-600 font-bold bg-white inline-block px-4 py-1 rounded-full border border-slate-200">Lösung: {q.correctValue}</p>}
+         <div className="mt-8 space-y-4">
+             <div className={`py-10 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
+                 <h3 className="text-2xl font-bold">{player.wasCorrect ? (isJokerActiveNow ? '🌟 2 Punkte für euch!' : 'Punkt für euch!') : 'Leider kein Punkt.'}</h3>
+                 
+                 <div className="mt-6">
+                     <span className="text-xs uppercase font-bold tracking-widest opacity-70 block mb-2 text-slate-500">Richtige Lösung:</span>
+                     <span className="text-2xl font-black bg-white px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-slate-800">
+                         {q.type === 'multiple' ? q.options[q.correctIndex] : q.correctValue}
+                     </span>
+                 </div>
+             </div>
+
+             {q.note && (
+                 <div className="bg-blue-50 border border-blue-200 p-6 rounded-3xl text-left shadow-sm">
+                     <span className="text-xs uppercase font-bold tracking-widest text-blue-500 block mb-2">💡 Schon gewusst?</span>
+                     <p className="text-slate-700 text-sm leading-relaxed whitespace-pre-line">{q.note}</p>
+                 </div>
+             )}
          </div>
       )}
     </div>
