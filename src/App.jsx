@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload, Smartphone } from 'lucide-react';
+import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload, Smartphone, ArrowUp, ArrowDown } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
@@ -302,7 +302,6 @@ export default function App() {
           const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
           const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
           const isCorrect = hasAnswered && winningTeams.includes(tId);
-          // NEU: Wir speichern isBullseye mit im Spieler ab, damit das Handy Bescheid weiß
           batch.update(doc(db, 'players', p.id), { 
               wasCorrect: isCorrect,
               isBullseye: isCorrect && isBullseye
@@ -491,6 +490,27 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
 
   const update = (i,f,v) => { const n=[...qs]; n[i][f]=v; setQs(n); };
   
+  // --- NEU: FRAGEN VERSCHIEBEN UND EINFÜGEN ---
+  const moveQUp = (index) => {
+    if (index === 0) return;
+    const n = [...qs];
+    [n[index - 1], n[index]] = [n[index], n[index - 1]];
+    setQs(n);
+  };
+
+  const moveQDown = (index) => {
+    if (index === qs.length - 1) return;
+    const n = [...qs];
+    [n[index], n[index + 1]] = [n[index + 1], n[index]];
+    setQs(n);
+  };
+
+  const insertQAfter = (index) => {
+    const n = [...qs];
+    n.splice(index + 1, 0, {type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false, note: ''});
+    setQs(n);
+  };
+
   const removeQ = (index) => {
     if (qs.length === 1) return alert("Ein Quiz braucht mindestens eine Frage!");
     if(window.confirm("Frage wirklich löschen?")) {
@@ -625,18 +645,30 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
       
       {qs.map((q,i) => (
         <div key={i} className="bg-white p-6 rounded-3xl border border-sky-100 shadow-md space-y-4">
-          <div className="flex gap-4">
-            <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : "Frage..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
+          
+          {/* NEU: DIE STEUERLEISTE (INPUT + AKTIONEN) */}
+          <div className="flex flex-col md:flex-row gap-4">
+            <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : "Frage..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50 outline-none focus:border-sky-200" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
             
-            <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.type} onChange={e=>update(i,'type',e.target.value)}>
-              <option value="multiple">Multiple Choice</option>
-              <option value="text">Freitext</option>
-              <option value="estimation">Schätzung</option>
-              <option value="buzzer">Buzzer-Frage</option>
-              <option value="break">⏸️ Pause / Zwischenstand</option>
-            </select>
-            
-            <button onClick={() => removeQ(i)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Löschen"><Trash2 size={20}/></button>
+            <div className="flex items-center gap-2">
+               <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700 h-full outline-none focus:border-sky-200" value={q.type} onChange={e=>update(i,'type',e.target.value)}>
+                 <option value="multiple">Multiple Choice</option>
+                 <option value="text">Freitext</option>
+                 <option value="estimation">Schätzung</option>
+                 <option value="buzzer">Buzzer-Frage</option>
+                 <option value="break">⏸️ Pause / Zwischenstand</option>
+               </select>
+               
+               <div className="flex gap-1 border-l border-sky-100 pl-2">
+                 <button onClick={() => moveQUp(i)} disabled={i===0} className={`p-2 rounded border transition-colors ${i===0 ? 'text-slate-200 bg-slate-50 border-slate-50' : 'text-slate-500 bg-white hover:bg-sky-50 border-sky-100'}`} title="Nach oben verschieben"><ArrowUp size={18}/></button>
+                 <button onClick={() => moveQDown(i)} disabled={i===qs.length-1} className={`p-2 rounded border transition-colors ${i===qs.length-1 ? 'text-slate-200 bg-slate-50 border-slate-50' : 'text-slate-500 bg-white hover:bg-sky-50 border-sky-100'}`} title="Nach unten verschieben"><ArrowDown size={18}/></button>
+               </div>
+
+               <div className="flex gap-1 border-l border-sky-100 pl-2">
+                 <button onClick={() => insertQAfter(i)} className="p-2 bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white rounded border border-emerald-100 transition-colors" title="Neue Frage danach einfügen"><Plus size={18}/></button>
+                 <button onClick={() => removeQ(i)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Frage löschen"><Trash2 size={18}/></button>
+               </div>
+            </div>
           </div>
           
           {q.type !== 'break' && (
@@ -680,7 +712,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         </div>
       ))}
       <div className="flex gap-4">
-        <button onClick={()=>setQs([...qs,{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false, note: ''}])} className="flex-1 bg-white py-3 rounded-2xl border border-sky-100 font-bold shadow-sm text-slate-500">+ Frage hinzufügen</button>
+        <button onClick={()=>setQs([...qs,{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false, note: ''}])} className="flex-1 bg-white py-3 rounded-2xl border border-sky-100 font-bold shadow-sm text-slate-500">+ Frage ganz unten hinzufügen</button>
         <button onClick={()=>onCreate(qs, allowJokers)} className="flex-1 bg-emerald-500 text-white py-3 rounded-2xl font-bold shadow-lg">Quiz starten</button>
       </div>
     </div>
@@ -1111,13 +1143,16 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                     <div className="px-4 py-2 bg-white space-y-2 border-t border-sky-50">
                       {t.players.map(p => {
                         const isReadyOrCorrect = room.status === 'revealed' ? p.wasCorrect === true : ((p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "") || p.id === room.buzzerWinner);
+                        // NEU: JOKER-SPION FÜR DIE REGIE
+                        const isJokerActiveNow = p.jokerQuestion === room.currentQuestionIndex;
                         
                         return (
                           <div key={p.id} className="flex justify-between text-sm items-center">
-                            <span className="text-slate-500 pl-6">{p.name}</span>
-                            <div className="flex items-center gap-4">
+                            <span className="text-slate-500 pl-6 truncate pr-2">{p.name}</span>
+                            <div className="flex items-center gap-3">
+                              {isJokerActiveNow && <span className="text-amber-500 text-sm animate-pulse" title="Joker aktiv!">🌟</span>}
                               {isReadyOrCorrect ? <CheckCircle size={14} className="text-emerald-500"/> : <div className="w-2 h-2 rounded-full bg-slate-200 animate-pulse mt-1"/>}
-                              <span className="font-mono text-xs text-slate-400">{p.score}</span>
+                              <span className="font-mono text-xs text-slate-400 w-6 text-right">{p.score}</span>
                             </div>
                           </div>
                         );
@@ -1259,7 +1294,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
       );
   }
 
-  // --- NEU: DYNAMISCHER ERFOLGSTEXT (INKL. BULLSEYE UND HALBE PUNKTE) ---
   let successText = 'Punkt für euch!';
   if (player.wasCorrect) {
       if (q.type === 'estimation' && player.isBullseye) {
