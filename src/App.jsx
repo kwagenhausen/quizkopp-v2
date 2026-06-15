@@ -177,7 +177,6 @@ export default function App() {
 
   useEffect(() => {
     let interval;
-    // Der Timer wird nur vom Host heruntergezählt, um asynchrone Sprünge zu vermeiden
     if (role === 'host' && activeRoom?.status === 'active' && activeRoom?.timeLeft > 0 && !activeRoom?.buzzerWinner) {
       interval = setInterval(async () => {
         const newTime = activeRoom.timeLeft - 1;
@@ -303,7 +302,11 @@ export default function App() {
           const hasAnswered = p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "";
           const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
           const isCorrect = hasAnswered && winningTeams.includes(tId);
-          batch.update(doc(db, 'players', p.id), { wasCorrect: isCorrect });
+          // NEU: Wir speichern isBullseye mit im Spieler ab, damit das Handy Bescheid weiß
+          batch.update(doc(db, 'players', p.id), { 
+              wasCorrect: isCorrect,
+              isBullseye: isCorrect && isBullseye
+          });
         }
       } else {
          for (const p of players) batch.update(doc(db, 'players', p.id), { wasCorrect: false });
@@ -341,7 +344,7 @@ export default function App() {
                     await updateDoc(doc(db, 'players', user.uid), { team: t });
                 }
             } else {
-                await setDoc(doc(db,'players',user.uid),{name:playerName, team:t, roomCode:roomCode, score:0, currentAnswer:null, answers:{}, jokerUsed: false, jokerQuestion: null});
+                await setDoc(doc(db,'players',user.uid),{name:playerName, team:t, roomCode:roomCode, score:0, currentAnswer:null, answers:{}, jokerUsed: false, jokerQuestion: null, isBullseye: false});
             }
             setCurrentRoomCode(roomCode); setRole('player');
         }} onAdmin={() => setAdminAuth('login')} onJoinBeamer={(c) => {
@@ -358,13 +361,12 @@ export default function App() {
         
         {role === 'lib' && <Library onSelect={x => createRoom(x.questions, x.allowJokers)} onEdit={quiz => { setEditingQuiz(quiz); setRole('setup'); }} onBack={() => setRole(null)} db={db}/>}
 
-        {/* HOST DASHBOARD - DUAL USE FÜR HOST UND BEAMER */}
         {(role === 'host' || role === 'beamer') && activeRoom && <HostDashboard room={activeRoom} players={players} isBeamer={role === 'beamer'} onReveal={revealAnswer} onNext={async () => {
             const last = activeRoom.currentQuestionIndex >= activeRoom.questions.length -1;
             const nextIdx = activeRoom.currentQuestionIndex + 1;
             const batch = writeBatch(db);
             for(const p of players) {
-              batch.update(doc(db,'players',p.id),{currentAnswer:null, corrected:false, wasCorrect:null, currentAwardedPoints:0});
+              batch.update(doc(db,'players',p.id),{currentAnswer:null, corrected:false, wasCorrect:null, currentAwardedPoints:0, isBullseye: false});
             }
             batch.update(doc(db,'rooms',currentRoomCode),{
               status:last?'finished':'active',
@@ -687,7 +689,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
 
 function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCorrect, db, isBeamer = false }) {
   const q = room.questions[room.currentQuestionIndex];
-  const nextQ = room.questions[room.currentQuestionIndex + 1]; // VORSCHAU AUF DIE NÄCHSTE FRAGE
+  const nextQ = room.questions[room.currentQuestionIndex + 1]; 
   const isLastQuestion = room.currentQuestionIndex >= room.questions.length - 1;
   const sortedTeams = getSortedTeams(players, room);
   
@@ -855,7 +857,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700"><Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})</h3>
         <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">{p.name} {p.team && <span className="text-sm font-normal text-slate-400 ml-1">({p.team})</span>}</span>)}</div>
         
-        {/* BEAMER SIEHT KEIN RANDOM TEAM GENERATOR */}
         {!isBeamer && players.length > 0 && (
           <div className="mt-12 pt-8 border-t border-sky-100 flex flex-col md:flex-row items-center justify-center gap-6">
             <div>
@@ -976,7 +977,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                     </p>
                 )}
 
-                {/* HOST: SEHEN DIE VERSTECKTE LÖSUNG / BEAMER SIEHT NUR "QUIZMASTER ENTSCHEIDET" */}
                 {!isBeamer && q.correctValue && (
                     <div className="mb-8">
                         {!showBuzzerAnswer ? (
@@ -1073,7 +1073,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             )}
           </div>
 
-          {/* NEU: DIE VORSCHAU BOX FÜR DEN HOST (NUR FÜR HOST SICHTBAR) */}
           {!isBeamer && nextQ && room.status === 'revealed' && (
               <div className="bg-slate-800 p-6 rounded-3xl mb-4 text-white shadow-inner flex items-center justify-between border-l-4 border-sky-400">
                   <div>
@@ -1260,6 +1259,18 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
       );
   }
 
+  // --- NEU: DYNAMISCHER ERFOLGSTEXT (INKL. BULLSEYE UND HALBE PUNKTE) ---
+  let successText = 'Punkt für euch!';
+  if (player.wasCorrect) {
+      if (q.type === 'estimation' && player.isBullseye) {
+          successText = isJokerActiveNow ? '🎯🌟 VOLLTREFFER! 4 Punkte für euch!' : '🎯 VOLLTREFFER! 2 Punkte für euch!';
+      } else if (q.type === 'text' && player.currentAwardedPoints !== undefined) {
+          successText = isJokerActiveNow ? `🌟 ${player.currentAwardedPoints} Punkte für euch!` : `${player.currentAwardedPoints} Punkt${player.currentAwardedPoints !== 1 ? 'e' : ''} für euch!`;
+      } else {
+          successText = isJokerActiveNow ? '🌟 2 Punkte für euch!' : 'Punkt für euch!';
+      }
+  }
+
   if (q.type === 'buzzer') {
     return (
       <div className="max-w-md mx-auto space-y-6 text-center text-slate-700">
@@ -1292,7 +1303,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
         {room.status === 'revealed' && typeof player.wasCorrect === 'boolean' && (
             <div className="mt-8 space-y-4">
                 <div className={`py-10 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
-                    <h3 className="text-2xl font-bold">{player.wasCorrect ? (isJokerActiveNow ? '🌟 2 Punkte für euch!' : 'Punkt für euch!') : 'Leider kein Punkt.'}</h3>
+                    <h3 className="text-2xl font-bold">{player.wasCorrect ? successText : 'Leider kein Punkt.'}</h3>
                     {q.correctValue && (
                         <div className="mt-6">
                             <span className="text-xs uppercase font-bold tracking-widest opacity-70 block mb-2 text-slate-500">Richtige Lösung:</span>
@@ -1370,7 +1381,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
       {room.status === 'revealed' && (q.type !== 'text' || player.corrected) && typeof player.wasCorrect === 'boolean' && (
          <div className="mt-8 space-y-4">
              <div className={`py-10 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
-                 <h3 className="text-2xl font-bold">{player.wasCorrect ? (isJokerActiveNow ? '🌟 2 Punkte für euch!' : 'Punkt für euch!') : 'Leider kein Punkt.'}</h3>
+                 <h3 className="text-2xl font-bold">{player.wasCorrect ? successText : 'Leider kein Punkt.'}</h3>
                  
                  <div className="mt-6">
                      <span className="text-xs uppercase font-bold tracking-widest opacity-70 block mb-2 text-slate-500">Richtige Lösung:</span>
