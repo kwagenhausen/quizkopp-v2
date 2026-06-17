@@ -317,11 +317,20 @@ export default function App() {
 
   if (loading) return <div className="min-h-screen bg-[#F0F9FF] flex items-center justify-center text-[#1E293B] font-bold">Lade Quizkopp...</div>;
 
+  const isSpecialView = role === 'beamer' || role === 'observer';
+
   return (
     <div className="min-h-screen bg-[#F0F9FF] text-[#1E293B] font-sans">
       <header className="bg-white border-b border-sky-100 p-4 sticky top-0 z-10 shadow-sm">
         <div className={(role === 'host' || role === 'beamer') ? "w-full max-w-[1920px] mx-auto px-4 flex justify-between items-center" : "max-w-4xl mx-auto flex justify-between items-center"}>
-          <div className="flex items-center gap-2"><Trophy className="text-[#E69F00]"/><h1 className="text-xl font-bold italic">Die Quizkopp App {role === 'beamer' && <span className="text-slate-300 font-normal ml-2">| Beamer</span>}</h1></div>
+          <div className="flex items-center gap-2">
+              <Trophy className="text-[#E69F00]"/>
+              <h1 className="text-xl font-bold italic">
+                  Die Quizkopp App 
+                  {role === 'beamer' && <span className="text-slate-300 font-normal ml-2">| Beamer</span>}
+                  {role === 'observer' && <span className="text-slate-300 font-normal ml-2">| Zuschauer</span>}
+              </h1>
+          </div>
           {role && <button onClick={() => { if(role==='host') deleteDoc(doc(db,'rooms',currentRoomCode)); setRole(null); setCurrentRoomCode(''); }} className="text-slate-400 hover:text-red-500 transition-colors"><LogOut size={20}/></button>}
         </div>
       </header>
@@ -350,6 +359,10 @@ export default function App() {
             const roomCode = c.toUpperCase();
             if(!allRooms.find(r=>r.id===roomCode)) return alert("Raum nicht gefunden!");
             setCurrentRoomCode(roomCode); setRole('beamer');
+        }} onJoinObserver={(c) => {
+            const roomCode = c.toUpperCase();
+            if(!allRooms.find(r=>r.id===roomCode)) return alert("Raum nicht gefunden!");
+            setCurrentRoomCode(roomCode); setRole('observer');
         }} />}
 
         {adminAuth === 'login' && <AdminLogin onOk={pw => pw === ADMIN_PASSWORD ? setAdminAuth(true) : alert("Falsch!")} onBack={() => setAdminAuth(false)}/>}
@@ -389,12 +402,15 @@ export default function App() {
               await updateDoc(doc(db,'rooms',currentRoomCode),{buzzerWinner: user.uid, buzzerWinnerName: myProfile.name, buzzerReaction: reactionTime});
             }
         }}/>}
+
+        {/* NEU: ZUSCHAUER DASHBOARD */}
+        {role === 'observer' && activeRoom && <ObserverDashboard room={activeRoom} players={players} />}
       </main>
     </div>
   );
 }
 
-function LoginView({ allPlayers, onJoin, onAdmin, onJoinBeamer }) {
+function LoginView({ allPlayers, onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
   const [c, setC] = useState(''); 
   const [n, setN] = useState('');
   const [t, setT] = useState(''); 
@@ -430,9 +446,12 @@ function LoginView({ allPlayers, onJoin, onAdmin, onJoinBeamer }) {
         <button onClick={() => onJoin(c, n, t)} disabled={!c || !n} className="w-full bg-[#E69F00] text-white py-4 rounded-xl font-bold text-lg hover:bg-[#D49100] transition-colors shadow-md disabled:opacity-50 mt-4">Jetzt beitreten</button>
       </div>
       
-      <div className="flex justify-between mt-20 text-slate-300 text-xs px-4">
-          <button onClick={() => { if(c.length === 4) onJoinBeamer(c); else alert("Bitte 4-stelligen Raum-Code oben eintragen!"); }} className="hover:text-slate-500 font-bold transition-colors">📺 Als Beamer beitreten</button>
-          <button onClick={onAdmin} className="hover:text-slate-500 transition-colors">Admin-Zentrale</button>
+      <div className="flex flex-col gap-4 mt-16 text-slate-400 text-xs px-4">
+          <div className="flex justify-between items-center border-b border-sky-100 pb-4">
+              <button onClick={() => { if(c.length === 4) onJoinObserver(c); else alert("Bitte 4-stelligen Raum-Code oben eintragen!"); }} className="hover:text-[#E69F00] font-bold transition-colors flex items-center gap-1">👀 Nur Mitlesen (Handy)</button>
+              <button onClick={() => { if(c.length === 4) onJoinBeamer(c); else alert("Bitte 4-stelligen Raum-Code oben eintragen!"); }} className="hover:text-[#E69F00] font-bold transition-colors flex items-center gap-1">📺 Als Beamer</button>
+          </div>
+          <button onClick={onAdmin} className="hover:text-slate-600 transition-colors mx-auto">Admin-Zentrale</button>
       </div>
     </div>
   );
@@ -490,7 +509,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
 
   const update = (i,f,v) => { const n=[...qs]; n[i][f]=v; setQs(n); };
   
-  // --- NEU: FRAGEN VERSCHIEBEN UND EINFÜGEN ---
   const moveQUp = (index) => {
     if (index === 0) return;
     const n = [...qs];
@@ -646,7 +664,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
       {qs.map((q,i) => (
         <div key={i} className="bg-white p-6 rounded-3xl border border-sky-100 shadow-md space-y-4">
           
-          {/* NEU: DIE STEUERLEISTE (INPUT + AKTIONEN) */}
           <div className="flex flex-col md:flex-row gap-4">
             <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : "Frage..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50 outline-none focus:border-sky-200" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
             
@@ -1143,7 +1160,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                     <div className="px-4 py-2 bg-white space-y-2 border-t border-sky-50">
                       {t.players.map(p => {
                         const isReadyOrCorrect = room.status === 'revealed' ? p.wasCorrect === true : ((p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "") || p.id === room.buzzerWinner);
-                        // NEU: JOKER-SPION FÜR DIE REGIE
                         const isJokerActiveNow = p.jokerQuestion === room.currentQuestionIndex;
                         
                         return (
@@ -1364,7 +1380,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
     <div className="max-w-md mx-auto space-y-6 text-slate-700">
       <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
         <span>Frage {room.currentQuestionIndex+1}</span>
-        {q.isJoker && <span className="text-amber-500 font-black animate-pulse bg-amber-50 px-2 py-1 rounded">🌟 2 PUNKTE</span>}
+        {q.isJoker && <span className="text-amber-500 font-black animate-pulse bg-amber-50 px-2 py-1 rounded">🌟 JOKER-FRAGE</span>}
         {q.timer === 0 && <span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> ∞</span>}
       </div>
 
@@ -1423,6 +1439,117 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
                          {q.type === 'multiple' ? q.options[q.correctIndex] : q.correctValue}
                      </span>
                  </div>
+             </div>
+
+             {q.note && (
+                 <div className="bg-blue-50 border border-blue-200 p-6 rounded-3xl text-left shadow-sm">
+                     <span className="text-xs uppercase font-bold tracking-widest text-blue-500 block mb-2">💡 Schon gewusst?</span>
+                     <p className="text-slate-700 text-sm leading-relaxed whitespace-pre-line">{q.note}</p>
+                 </div>
+             )}
+         </div>
+      )}
+    </div>
+  );
+}
+
+// --- NEU: ZUSCHAUER DASHBOARD COMPONENT ---
+function ObserverDashboard({ room, players }) {
+  const q = room.questions[room.currentQuestionIndex];
+  const sortedTeams = getSortedTeams(players, room);
+
+  if (room.status === 'lobby') return (
+    <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700">
+      <h2 className="text-2xl font-bold">👀 Zuschauer-Modus</h2>
+      <p className="mt-8 animate-pulse text-[#E69F00]">Warte auf Start...</p>
+    </div>
+  );
+
+  if (room.status === 'finished') {
+    return (
+      <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700 relative overflow-hidden">
+        <Confetti />
+        <Trophy size={64} className="mx-auto text-[#E69F00] mb-6 relative z-10"/>
+        <h2 className="text-2xl font-bold mb-6 relative z-10">Quiz beendet!</h2>
+        
+        <div className="mt-6 space-y-4 relative z-10 px-4">
+            <h3 className="font-bold text-slate-400 uppercase tracking-widest text-sm mb-2">Top 3 Teams</h3>
+            {sortedTeams.slice(0, 3).map((t, i) => (
+                <div key={t.name} className={`flex justify-between items-center p-3 rounded-xl border ${i===0 ? 'bg-yellow-50 border-[#E69F00]' : 'bg-slate-50 border-sky-50'}`}>
+                    <span className="font-bold">{i+1}. {t.name}</span>
+                    <span className="text-[#E69F00] font-bold">{t.totalScore} Pkt</span>
+                </div>
+            ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (q.type === 'break') {
+    return (
+      <div className="text-center py-16 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-md mx-auto text-slate-700">
+        <h2 className="text-3xl font-bold mb-6 text-[#E69F00]">⏸️ {q.q || 'Pause'}</h2>
+        <p className="mb-8 text-lg font-medium text-slate-500 px-6">Zeit zum Durchatmen!</p>
+        <div className="space-y-3 px-6 text-left">
+            <h3 className="font-bold text-slate-400 uppercase tracking-widest text-sm mb-2 text-center">Aktuelle Top 3</h3>
+            {sortedTeams.slice(0, 3).map((t, i) => (
+                <div key={t.name} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border border-sky-50">
+                    <span className="font-bold text-slate-600">{i+1}. {t.name}</span>
+                    <span className="text-[#E69F00] font-bold">{t.totalScore} Pkt</span>
+                </div>
+            ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-md mx-auto space-y-6 text-slate-700">
+      <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
+        <span>Frage {room.currentQuestionIndex+1}</span>
+        {q.isJoker && <span className="text-amber-500 font-black animate-pulse bg-amber-50 px-2 py-1 rounded">🌟 JOKER-FRAGE</span>}
+        {q.timer === 0 && <span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> ∞</span>}
+      </div>
+
+      {q.timer > 0 && room.status === 'active' && (
+        <div className="flex justify-center my-4">
+           <div className={`flex items-center gap-3 px-8 py-3 rounded-full border-4 shadow-lg font-mono text-4xl font-bold transition-all duration-300 ${room.timeLeft <= 5 ? 'bg-red-50 border-red-500 text-red-600 animate-pulse scale-110' : 'bg-white border-sky-100 text-[#E69F00]'}`}>
+              <Clock size={36}/> {room.timeLeft}s
+           </div>
+        </div>
+      )}
+
+      <h2 className="text-2xl font-bold leading-tight mb-2">{q.q}</h2>
+
+      {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
+      {q.imgUrl && q.showImg && (getMediaType(q.imgUrl) === 'youtube' || getMediaType(q.imgUrl) === 'audio') && (
+         <div className="w-full h-32 bg-slate-800 rounded-xl flex flex-col items-center justify-center text-sky-400 shadow-sm mb-6 border border-slate-700">
+            <Play size={32} className="mb-2 opacity-50"/>
+            <span className="text-sm font-bold uppercase tracking-widest">Achtung Beamer</span>
+            <span className="text-xs text-slate-400 mt-1">Audio / Video läuft beim Quizmaster</span>
+         </div>
+      )}
+
+      {room.status === 'active' && (
+        <div className="text-center py-10 bg-white rounded-3xl border border-sky-100 shadow-inner mt-4">
+           <span className="text-2xl mb-2 block">👀</span>
+           <h3 className="font-bold text-sky-600 mb-1">Zuschauer-Modus</h3>
+           <p className="text-sm text-slate-400 px-4">Dein Team-Captain loggt die Antworten ein. Besprecht euch!</p>
+           {q.type === 'multiple' && (
+               <div className="mt-6 space-y-2 px-4">
+                   {q.options.map((o,i)=><div key={i} className="w-full bg-slate-50 p-3 rounded-xl text-left border border-sky-50 text-sm text-slate-500 font-medium">{o}</div>)}
+               </div>
+           )}
+        </div>
+      )}
+
+      {room.status === 'revealed' && (
+         <div className="mt-8 space-y-4">
+             <div className="py-10 rounded-3xl border-2 text-center bg-slate-50 border-sky-100 text-slate-700">
+                 <h3 className="text-lg font-bold text-slate-400 uppercase tracking-widest mb-4">Auflösung</h3>
+                 <span className="text-2xl font-black bg-white px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-slate-800">
+                     {q.type === 'multiple' ? q.options[q.correctIndex] : (q.correctValue || "Quizmaster entscheidet")}
+                 </span>
              </div>
 
              {q.note && (
