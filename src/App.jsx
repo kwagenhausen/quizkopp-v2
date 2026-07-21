@@ -245,10 +245,26 @@ export default function App() {
     await batch.commit();
   };
 
-  const revealAnswer = async () => {
+  // --- NEU: DIE REVEAL FUNKTION AKZEPTIERT JETZT DEN LIVE-WERT ---
+  const revealAnswer = async (liveEstValue = null) => {
     if(!activeRoom) return;
-    const q = activeRoom.questions[activeRoom.currentQuestionIndex];
+    const questionsCopy = [...activeRoom.questions];
+    const q = questionsCopy[activeRoom.currentQuestionIndex];
     const batch = writeBatch(db);
+
+    // Live-Eingabe in der DB abspeichern, damit alle Geräte (Beamer/Spieler) sie sehen
+    if (q.type === 'estimation') {
+      const finalValue = liveEstValue !== null ? liveEstValue : q.correctValue;
+      // Kommas in Punkte umwandeln, damit die Mathematik nicht crasht
+      const parsedFinal = parseFloat(String(finalValue).replace(',', '.'));
+      
+      if (finalValue === "" || isNaN(parsedFinal)) {
+          alert("Bitte trage eine gültige Zahl als Lösung ein (z.B. nach dem Wiegen)!");
+          return; // Abbruch, wenn keine gültige Zahl da ist!
+      }
+      q.correctValue = String(parsedFinal);
+      batch.update(doc(db, 'rooms', currentRoomCode), { questions: questionsCopy });
+    }
 
     if (q.type === 'multiple') {
       for (const p of players) {
@@ -263,12 +279,14 @@ export default function App() {
     } else if (q.type === 'estimation') {
       const validPlayers = players.filter(p => p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "");
       if (validPlayers.length > 0) {
-        const target = parseFloat(q.correctValue);
+        // Hier greifen wir jetzt sicher auf den frischen, formatierten Wert zu
+        const target = parseFloat(String(q.correctValue).replace(',', '.'));
         const teams = {};
         for (const p of validPlayers) {
           const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
           if (!teams[tId]) teams[tId] = { sum: 0, count: 0 };
-          teams[tId].sum += parseFloat(p.currentAnswer);
+          // Komma-Schutz auch bei den Antworten der Spieler
+          teams[tId].sum += parseFloat(String(p.currentAnswer).replace(',', '.'));
           teams[tId].count++;
         }
         let minDiff = Infinity;
@@ -403,7 +421,6 @@ export default function App() {
             }
         }}/>}
 
-        {/* NEU: ZUSCHAUER DASHBOARD */}
         {role === 'observer' && activeRoom && <ObserverDashboard room={activeRoom} players={players} />}
       </main>
     </div>
@@ -719,8 +736,9 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
             <div key={oi} className={`flex gap-2 p-2 rounded border ${q.correctIndex == oi ? 'border-emerald-200 bg-emerald-50' : 'bg-slate-50 border-sky-50'}`}><input type="radio" checked={q.correctIndex==oi} onChange={()=>update(i,'correctIndex',oi)}/><input className="bg-transparent w-full text-slate-700" value={o} onChange={e=>{const no=[...q.options];no[oi]=e.target.value;update(i,'options',no)}}/></div>
           ))}</div>}
           
+          {/* NEU: PLATZHALTER TEXT BEI SCHÄTZFRAGEN ANGEPASST */}
           {q.type !== 'multiple' && q.type !== 'break' && (
-            <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.correctValue} onChange={e=>update(i,'correctValue',e.target.value)} placeholder={q.type === 'estimation' ? "Korrekte Zahl..." : "Korrekte Lösung (für dich zur Info)..."} />
+            <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.correctValue} onChange={e=>update(i,'correctValue',e.target.value)} placeholder={q.type === 'estimation' ? "Korrekte Zahl (oder leer lassen für Live-Eingabe nach dem Wiegen...)" : "Korrekte Lösung (für dich zur Info)..."} />
           )}
 
           {q.type !== 'break' && (
@@ -749,10 +767,15 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     x: typeof window !== 'undefined' ? window.innerWidth - 420 : 800, 
     y: 80 
   });
+  
+  // --- NEU: STATE FÜR LIVE-EINGABE DER SCHÄTZUNG ---
+  const [liveEstValue, setLiveEstValue] = useState('');
 
   useEffect(() => {
     setShowBuzzerAnswer(false);
-  }, [room.currentQuestionIndex]);
+    // Setze das Live-Feld auf den in der DB gespeicherten Wert (falls vorhanden) oder leer
+    setLiveEstValue(q?.correctValue || '');
+  }, [room.currentQuestionIndex, q?.correctValue]);
 
   const toggleSimulator = async () => {
     const demoId = 'demo_' + room.id;
@@ -817,12 +840,13 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
         if (!teams[tId]) teams[tId] = { name: tId, members: [], sum: 0, count: 0, isWinner: false, isBullseye: false };
         teams[tId].members.push(p);
-        teams[tId].sum += parseFloat(p.currentAnswer);
+        // Sicherer Komma-Support für die Anzeige
+        teams[tId].sum += parseFloat(String(p.currentAnswer).replace(',', '.'));
         teams[tId].count++;
         if (p.wasCorrect) teams[tId].isWinner = true; 
     });
 
-    const target = parseFloat(q.correctValue);
+    const target = parseFloat(String(q.correctValue).replace(',', '.'));
 
     return (
         <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6 mt-8 border-t border-sky-100 pt-8">
@@ -1015,6 +1039,21 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
             <h2 className="text-4xl md:text-5xl lg:text-6xl font-bold mb-10 leading-tight">{q.q}</h2>
 
+            {/* NEU: DIE INFO-BOX FÜR DIE LIVE-EINGABE BEIM WIEGEN (Nur für Host sichtbar!) */}
+            {!isBeamer && q.type === 'estimation' && room.status === 'active' && (
+              <div className="bg-blue-50 border border-blue-200 p-6 rounded-3xl mb-8 shadow-inner">
+                <h3 className="text-lg font-bold text-blue-800 mb-2">⚖️ Live-Ergebnis (Schätzen)</h3>
+                <p className="text-sm text-blue-600 mb-4">Wurde im Setup kein Wert eingetragen, kannst du hier das echte Ergebnis (z.B. nach dem Wiegen) direkt eintragen, bevor du auflöst.</p>
+                <input 
+                  type="number" 
+                  className="w-full bg-white p-4 rounded-xl border border-blue-200 text-xl font-bold outline-none focus:border-blue-500 shadow-sm"
+                  placeholder="Exaktes Ergebnis eintragen..."
+                  value={liveEstValue}
+                  onChange={e => setLiveEstValue(e.target.value)}
+                />
+              </div>
+            )}
+
             {q.type === 'buzzer' && room.status === 'active' && room.buzzerWinner && (
               <div className="bg-red-50 border-2 border-red-500 p-12 rounded-3xl text-center shadow-2xl animate-pulse mt-auto">
                 <p className="text-red-500 font-bold text-xl mb-4 uppercase tracking-widest">Schnellster Buzzer:</p>
@@ -1136,7 +1175,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
           )}
 
           {!isBeamer && (q.type !== 'buzzer' || room.status === 'revealed') && (
-            <button onClick={room.status === 'active' ? onReveal : onNext} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
+            <button onClick={() => room.status === 'active' ? onReveal(q.type === 'estimation' ? liveEstValue : null) : onNext()} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
               {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
@@ -1380,7 +1419,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
     <div className="max-w-md mx-auto space-y-6 text-slate-700">
       <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
         <span>Frage {room.currentQuestionIndex+1}</span>
-        {q.isJoker && <span className="text-amber-500 font-black animate-pulse bg-amber-50 px-2 py-1 rounded">🌟 JOKER-FRAGE</span>}
+        {q.isJoker && <span className="text-amber-500 font-black animate-pulse bg-amber-50 px-2 py-1 rounded">🌟 2 PUNKTE</span>}
         {q.timer === 0 && <span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> ∞</span>}
       </div>
 
