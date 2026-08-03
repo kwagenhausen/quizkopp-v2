@@ -212,6 +212,29 @@ export default function App() {
     });
   };
 
+  // --- NEU: BUZZER SPERREN & WEITERMACHEN ---
+  const handleBuzzerWrongContinue = async () => {
+    const pId = activeRoom.buzzerWinner;
+    const buzzingPlayer = players.find(p => p.id === pId);
+    if (!buzzingPlayer) return;
+
+    // Wir sperren zur Sicherheit das komplette Team, damit sie nicht einfach das Handy weitergeben
+    const buzzingTeamId = buzzingPlayer.team && buzzingPlayer.team.trim() !== "" ? buzzingPlayer.team.trim() : buzzingPlayer.name;
+    const teamMemberIds = players.filter(p => {
+        const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
+        return tId === buzzingTeamId;
+    }).map(p => p.id);
+
+    const currentLockedOut = activeRoom.buzzerLockedOut || [];
+    const newLockedOut = [...new Set([...currentLockedOut, ...teamMemberIds])];
+
+    await updateDoc(doc(db, 'rooms', currentRoomCode), {
+        buzzerWinner: null,
+        buzzerReaction: null,
+        buzzerLockedOut: newLockedOut
+    });
+  };
+
   const handleBuzzerHost = async (isCorrect) => {
     const pId = activeRoom.buzzerWinner;
     const batch = writeBatch(db);
@@ -245,22 +268,19 @@ export default function App() {
     await batch.commit();
   };
 
-  // --- NEU: DIE REVEAL FUNKTION AKZEPTIERT JETZT DEN LIVE-WERT ---
   const revealAnswer = async (liveEstValue = null) => {
     if(!activeRoom) return;
     const questionsCopy = [...activeRoom.questions];
     const q = questionsCopy[activeRoom.currentQuestionIndex];
     const batch = writeBatch(db);
 
-    // Live-Eingabe in der DB abspeichern, damit alle Geräte (Beamer/Spieler) sie sehen
     if (q.type === 'estimation') {
       const finalValue = liveEstValue !== null ? liveEstValue : q.correctValue;
-      // Kommas in Punkte umwandeln, damit die Mathematik nicht crasht
       const parsedFinal = parseFloat(String(finalValue).replace(',', '.'));
       
       if (finalValue === "" || isNaN(parsedFinal)) {
           alert("Bitte trage eine gültige Zahl als Lösung ein (z.B. nach dem Wiegen)!");
-          return; // Abbruch, wenn keine gültige Zahl da ist!
+          return; 
       }
       q.correctValue = String(parsedFinal);
       batch.update(doc(db, 'rooms', currentRoomCode), { questions: questionsCopy });
@@ -279,13 +299,11 @@ export default function App() {
     } else if (q.type === 'estimation') {
       const validPlayers = players.filter(p => p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== "");
       if (validPlayers.length > 0) {
-        // Hier greifen wir jetzt sicher auf den frischen, formatierten Wert zu
         const target = parseFloat(String(q.correctValue).replace(',', '.'));
         const teams = {};
         for (const p of validPlayers) {
           const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
           if (!teams[tId]) teams[tId] = { sum: 0, count: 0 };
-          // Komma-Schutz auch bei den Antworten der Spieler
           teams[tId].sum += parseFloat(String(p.currentAnswer).replace(',', '.'));
           teams[tId].count++;
         }
@@ -407,7 +425,7 @@ export default function App() {
               buzzerLockedOut: []
             });
             await batch.commit();
-        }} onCorrect={manualCorrect} onBuzzerCorrect={handleBuzzerHost} db={db}/>}
+        }} onCorrect={manualCorrect} onBuzzerCorrect={handleBuzzerHost} onBuzzerWrongContinue={handleBuzzerWrongContinue} db={db}/>}
 
         {role === 'player' && activeRoom && <PlayerDashboard room={activeRoom} player={myProfile} players={players} onAnswer={async v => {
             await updateDoc(doc(db,'players',user.uid),{currentAnswer:v,[`answers.${activeRoom.currentQuestionIndex}`]:v});
@@ -682,7 +700,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         <div key={i} className="bg-white p-6 rounded-3xl border border-sky-100 shadow-md space-y-4">
           
           <div className="flex flex-col md:flex-row gap-4">
-            <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : "Frage..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50 outline-none focus:border-sky-200" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
+            <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : "Frage (oder leer für reine Buzzer-Runde)..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50 outline-none focus:border-sky-200" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
             
             <div className="flex items-center gap-2">
                <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700 h-full outline-none focus:border-sky-200" value={q.type} onChange={e=>update(i,'type',e.target.value)}>
@@ -736,7 +754,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
             <div key={oi} className={`flex gap-2 p-2 rounded border ${q.correctIndex == oi ? 'border-emerald-200 bg-emerald-50' : 'bg-slate-50 border-sky-50'}`}><input type="radio" checked={q.correctIndex==oi} onChange={()=>update(i,'correctIndex',oi)}/><input className="bg-transparent w-full text-slate-700" value={o} onChange={e=>{const no=[...q.options];no[oi]=e.target.value;update(i,'options',no)}}/></div>
           ))}</div>}
           
-          {/* NEU: PLATZHALTER TEXT BEI SCHÄTZFRAGEN ANGEPASST */}
           {q.type !== 'multiple' && q.type !== 'break' && (
             <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.correctValue} onChange={e=>update(i,'correctValue',e.target.value)} placeholder={q.type === 'estimation' ? "Korrekte Zahl (oder leer lassen für Live-Eingabe nach dem Wiegen...)" : "Korrekte Lösung (für dich zur Info)..."} />
           )}
@@ -754,7 +771,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   );
 }
 
-function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCorrect, db, isBeamer = false }) {
+function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCorrect, onBuzzerWrongContinue, db, isBeamer = false }) {
   const q = room.questions[room.currentQuestionIndex];
   const nextQ = room.questions[room.currentQuestionIndex + 1]; 
   const isLastQuestion = room.currentQuestionIndex >= room.questions.length - 1;
@@ -768,12 +785,10 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     y: 80 
   });
   
-  // --- NEU: STATE FÜR LIVE-EINGABE DER SCHÄTZUNG ---
   const [liveEstValue, setLiveEstValue] = useState('');
 
   useEffect(() => {
     setShowBuzzerAnswer(false);
-    // Setze das Live-Feld auf den in der DB gespeicherten Wert (falls vorhanden) oder leer
     setLiveEstValue(q?.correctValue || '');
   }, [room.currentQuestionIndex, q?.correctValue]);
 
@@ -840,7 +855,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
         if (!teams[tId]) teams[tId] = { name: tId, members: [], sum: 0, count: 0, isWinner: false, isBullseye: false };
         teams[tId].members.push(p);
-        // Sicherer Komma-Support für die Anzeige
         teams[tId].sum += parseFloat(String(p.currentAnswer).replace(',', '.'));
         teams[tId].count++;
         if (p.wasCorrect) teams[tId].isWinner = true; 
@@ -1037,9 +1051,9 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               <img src={q.imgUrl} className="w-full max-h-[45vh] object-contain rounded-2xl mb-8 bg-slate-50 p-4 border border-sky-50"/>
             )}
 
-            <h2 className="text-4xl md:text-5xl lg:text-6xl font-bold mb-10 leading-tight">{q.q}</h2>
+            {/* NEU: PLATZHALTER WENN FRAGENTEXT BEIM BUZZER LEER IST */}
+            <h2 className="text-4xl md:text-5xl lg:text-6xl font-bold mb-10 leading-tight">{q.q || (q.type === 'buzzer' ? 'Schnelles Spiel: Buzzer aktiv!' : '')}</h2>
 
-            {/* NEU: DIE INFO-BOX FÜR DIE LIVE-EINGABE BEIM WIEGEN (Nur für Host sichtbar!) */}
             {!isBeamer && q.type === 'estimation' && room.status === 'active' && (
               <div className="bg-blue-50 border border-blue-200 p-6 rounded-3xl mb-8 shadow-inner">
                 <h3 className="text-lg font-bold text-blue-800 mb-2">⚖️ Live-Ergebnis (Schätzen)</h3>
@@ -1080,10 +1094,15 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                     </div>
                 )}
 
+                {/* NEU: DIE NEUEN BUZZER STEUER-BUTTONS (INKL. SPERREN) */}
                 {!isBeamer ? (
-                    <div className="flex gap-6 justify-center">
-                      <button onClick={()=>onBuzzerCorrect(false)} className="bg-white border border-red-200 text-red-500 hover:bg-red-500 hover:text-white px-8 py-5 rounded-2xl font-bold text-xl flex items-center gap-3 transition-colors"><XCircle size={28}/> Falsch</button>
-                      <button onClick={()=>onBuzzerCorrect(true)} className="bg-emerald-500 text-white px-8 py-5 rounded-2xl font-bold text-xl flex items-center gap-3"><CheckCircle size={28}/> Richtig</button>
+                    <div className="flex flex-col gap-4 max-w-2xl mx-auto">
+                        <button onClick={()=>onBuzzerCorrect(true)} className="bg-emerald-500 text-white px-8 py-5 rounded-2xl font-bold text-xl flex items-center justify-center gap-3 w-full shadow-md hover:bg-emerald-600 transition-colors"><CheckCircle size={28}/> Richtig (+ Punkte)</button>
+                        
+                        <div className="flex flex-col sm:flex-row gap-4">
+                            <button onClick={onBuzzerWrongContinue} className="bg-orange-100 border border-orange-300 text-orange-600 hover:bg-orange-500 hover:text-white px-6 py-4 rounded-2xl font-bold flex-1 flex items-center justify-center gap-2 transition-colors shadow-sm" title="Sperrt den aktuellen Spieler und gibt den Buzzer für die anderen wieder frei."><Bell size={24}/> Falsch (Sperren & Weiter)</button>
+                            <button onClick={()=>onBuzzerCorrect(false)} className="bg-red-50 border border-red-200 text-red-500 hover:bg-red-500 hover:text-white px-6 py-4 rounded-2xl font-bold flex-1 flex items-center justify-center gap-2 transition-colors shadow-sm" title="Beendet die Runde und gibt den anderen Teams den Punkt."><XCircle size={24}/> Falsch (Runde beenden)</button>
+                        </div>
                     </div>
                 ) : (
                     <p className="text-center text-red-400 font-bold uppercase tracking-widest mt-6 animate-pulse">Quizmaster entscheidet...</p>
@@ -1241,6 +1260,9 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
   const hasAnswered = player.currentAnswer !== null && player.currentAnswer !== undefined && player.currentAnswer !== "";
   const timeIsUp = q.timer > 0 && room.timeLeft === 0 && room.status === 'active';
   const isJokerActiveNow = player.jokerQuestion === room.currentQuestionIndex;
+  
+  // NEU: IST DIESER SPIELER GERADE FÜR DEN BUZZER GESPERRT?
+  const isLockedOut = (room.buzzerLockedOut || []).includes(player.id);
 
   const handleBuzzClick = () => {
     try {
@@ -1377,11 +1399,19 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
            </div>
         )}
 
-        <h2 className="text-2xl font-bold mb-6">{q.q}</h2>
+        <h2 className="text-2xl font-bold mb-6">{q.q || 'Macht euch bereit...'}</h2>
 
         {renderJokerArea()}
         
-        {room.status === 'active' && !room.buzzerWinner && (
+        {/* NEU: WENN SPIELER GESPERRT IST (FALSCH GEANTWORTET) */}
+        {room.status === 'active' && !room.buzzerWinner && isLockedOut && (
+            <div className="w-64 h-64 rounded-full bg-slate-200 border-8 border-slate-300 shadow-inner mx-auto flex items-center justify-center mt-8 cursor-not-allowed">
+                <span className="text-3xl font-black text-slate-400 uppercase tracking-widest">Gesperrt</span>
+            </div>
+        )}
+
+        {/* WENN FREI */}
+        {room.status === 'active' && !room.buzzerWinner && !isLockedOut && (
             <button onClick={handleBuzzClick} className="w-64 h-64 rounded-full bg-red-600 border-8 border-red-800 shadow-[0_10px_0_#7f1d1d,0_0_50px_rgba(220,38,38,0.3)] active:translate-y-[10px] active:shadow-none transition-all mx-auto flex items-center justify-center mt-8">
                 <span className="text-4xl font-black text-white">BUZZER</span>
             </button>
@@ -1492,7 +1522,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
   );
 }
 
-// --- NEU: ZUSCHAUER DASHBOARD COMPONENT ---
+// --- ZUSCHAUER DASHBOARD COMPONENT ---
 function ObserverDashboard({ room, players }) {
   const q = room.questions[room.currentQuestionIndex];
   const sortedTeams = getSortedTeams(players, room);
@@ -1558,7 +1588,8 @@ function ObserverDashboard({ room, players }) {
         </div>
       )}
 
-      <h2 className="text-2xl font-bold leading-tight mb-2">{q.q}</h2>
+      {/* TEXT FALLBACK WENN LEER */}
+      <h2 className="text-2xl font-bold leading-tight mb-2">{q.q || (q.type === 'buzzer' ? 'Buzzer-Runde' : '')}</h2>
 
       {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
       {q.imgUrl && q.showImg && (getMediaType(q.imgUrl) === 'youtube' || getMediaType(q.imgUrl) === 'audio') && (
