@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload, Smartphone, ArrowUp, ArrowDown } from 'lucide-react';
+import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Folder, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload, Smartphone, ArrowUp, ArrowDown, ChevronLeft } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
@@ -212,13 +212,11 @@ export default function App() {
     });
   };
 
-  // --- NEU: BUZZER SPERREN & WEITERMACHEN ---
   const handleBuzzerWrongContinue = async () => {
     const pId = activeRoom.buzzerWinner;
     const buzzingPlayer = players.find(p => p.id === pId);
     if (!buzzingPlayer) return;
 
-    // Wir sperren zur Sicherheit das komplette Team, damit sie nicht einfach das Handy weitergeben
     const buzzingTeamId = buzzingPlayer.team && buzzingPlayer.team.trim() !== "" ? buzzingPlayer.team.trim() : buzzingPlayer.name;
     const teamMemberIds = players.filter(p => {
         const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
@@ -352,8 +350,6 @@ export default function App() {
   };
 
   if (loading) return <div className="min-h-screen bg-[#F0F9FF] flex items-center justify-center text-[#1E293B] font-bold">Lade Quizkopp...</div>;
-
-  const isSpecialView = role === 'beamer' || role === 'observer';
 
   return (
     <div className="min-h-screen bg-[#F0F9FF] text-[#1E293B] font-sans">
@@ -513,30 +509,104 @@ function AdminPanel({ onNew, onLib, onLogout }) {
   );
 }
 
+// --- NEU: DIE BIBLIOTHEK MIT ORDNER-FUNKTION ---
 function Library({ onSelect, onEdit, onBack, db }) {
   const [t, setT] = useState([]);
-  useEffect(() => { getDocs(collection(db,'quiz_templates')).then(s=>setT(s.docs.map(d=>({id:d.id,...d.data()})))); }, []);
-  const deleteQuiz = async (id) => { if(window.confirm("Bist du sicher?")) { await deleteDoc(doc(db, 'quiz_templates', id)); setT(t.filter(q => q.id !== id)); } };
+  const [currentFolder, setCurrentFolder] = useState(null);
+
+  useEffect(() => { 
+    getDocs(collection(db,'quiz_templates')).then(s => setT(s.docs.map(d => ({id:d.id, ...d.data()})))); 
+  }, []);
+
+  const deleteQuiz = async (id) => { 
+    if(window.confirm("Bist du sicher?")) { 
+      await deleteDoc(doc(db, 'quiz_templates', id)); 
+      setT(t.filter(q => q.id !== id)); 
+    } 
+  };
   
+  // Alle existierenden, eindeutigen Ordnernamen finden (leere ignorieren)
+  const folders = [...new Set(t.map(q => q.folder).filter(f => f && f.trim() !== ''))].sort();
+
+  // Zeigt entweder alle Quizzes im aktuellen Ordner, oder alle OHNE Ordner (wenn auf Startseite)
+  const displayQuizzes = currentFolder 
+    ? t.filter(q => q.folder === currentFolder) 
+    : t.filter(q => !q.folder || q.folder.trim() === '');
+
   return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center"><h2 className="text-2xl font-bold">Deine Quizzes</h2><button onClick={onBack} className="text-slate-400">Zurück</button></div>
-      {t.map(x => (
-        <div key={x.id} className="bg-white p-6 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border border-sky-50 shadow-sm">
-          <div><p className="font-bold text-xl">{x.title}</p><p className="text-sm text-slate-400">{x.questions?.length || 0} Fragen</p></div>
-          <div className="flex items-center gap-2 w-full sm:w-auto">
-            <button onClick={() => onEdit(x)} className="p-3 text-slate-400 hover:text-[#E69F00] bg-slate-50 rounded-lg" title="Quiz bearbeiten"><Edit3 size={20}/></button>
-            <button onClick={() => deleteQuiz(x.id)} className="p-3 text-slate-400 hover:text-red-500 bg-slate-50 rounded-lg" title="Quiz löschen"><Trash2 size={20}/></button>
-            <button onClick={() => onSelect(x)} className="bg-emerald-500 text-white px-6 py-3 rounded-xl font-bold ml-auto sm:ml-2 shadow-md w-full sm:w-auto">Spielen</button>
+    <div className="space-y-6">
+      <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-sky-100 shadow-sm">
+        <h2 className="text-2xl font-bold flex items-center gap-3 text-slate-700">
+          {currentFolder ? (
+            <>
+              <button onClick={() => setCurrentFolder(null)} className="p-2 hover:bg-sky-50 text-slate-400 hover:text-sky-600 rounded-lg transition-colors" title="Zurück zur Übersicht">
+                <ChevronLeft size={24}/>
+              </button> 
+              <Folder size={28} className="text-sky-400"/>
+              {currentFolder}
+            </>
+          ) : (
+             <>
+               <FolderOpen size={28} className="text-[#E69F00]"/> Deine Bibliothek
+             </>
+          )}
+        </h2>
+        <button onClick={onBack} className="text-slate-400 hover:text-slate-600 px-4 py-2 font-bold transition-colors">Schließen</button>
+      </div>
+
+      {!currentFolder && folders.length > 0 && (
+        <div className="mb-10">
+          <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 px-2">Deine Ordner</h3>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            {folders.map(f => {
+              const quizCount = t.filter(q => q.folder === f).length;
+              return (
+                <button key={f} onClick={() => setCurrentFolder(f)} className="bg-white p-6 rounded-2xl flex flex-col items-center gap-3 border border-sky-100 hover:border-sky-300 hover:shadow-md transition-all group">
+                  <Folder size={48} className="text-sky-300 group-hover:text-sky-500 transition-colors"/>
+                  <div className="text-center w-full">
+                      <span className="font-bold text-slate-700 truncate block w-full">{f}</span>
+                      <span className="text-xs text-slate-400 font-medium">{quizCount} Quiz{quizCount !== 1 ? 'zes' : ''}</span>
+                  </div>
+                </button>
+              )
+            })}
           </div>
         </div>
-      ))}
+      )}
+
+      <div>
+        {!currentFolder && folders.length > 0 && displayQuizzes.length > 0 && (
+            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 px-2 pt-4 border-t border-sky-100">Quizzes ohne Ordner</h3>
+        )}
+        
+        {displayQuizzes.length === 0 && currentFolder && (
+             <div className="text-center py-12 text-slate-400 italic">Dieser Ordner ist leer.</div>
+        )}
+
+        <div className="space-y-4">
+            {displayQuizzes.map(x => (
+              <div key={x.id} className="bg-white p-6 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border border-sky-50 shadow-sm hover:shadow-md transition-shadow">
+                <div>
+                  <p className="font-bold text-xl text-slate-700">{x.title}</p>
+                  <p className="text-sm text-slate-400">{x.questions?.length || 0} Fragen {x.allowJokers && <span className="text-amber-500 font-bold ml-2">🌟 Joker aktiv</span>}</p>
+                </div>
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <button onClick={() => onEdit(x)} className="p-3 text-slate-400 hover:text-[#E69F00] bg-slate-50 rounded-lg transition-colors" title="Quiz bearbeiten"><Edit3 size={20}/></button>
+                  <button onClick={() => deleteQuiz(x.id)} className="p-3 text-slate-400 hover:text-red-500 bg-slate-50 rounded-lg transition-colors" title="Quiz löschen"><Trash2 size={20}/></button>
+                  <button onClick={() => onSelect(x)} className="bg-emerald-500 hover:bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold ml-auto sm:ml-2 shadow-md transition-colors w-full sm:w-auto flex items-center justify-center gap-2"><Play size={20}/> Spielen</button>
+                </div>
+              </div>
+            ))}
+        </div>
+      </div>
     </div>
   );
 }
 
 function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   const [title, setTitle] = useState(initialQuiz ? initialQuiz.title : '');
+  // --- NEU: FOLDER STATE ---
+  const [folder, setFolder] = useState(initialQuiz ? initialQuiz.folder || '' : '');
   const [allowJokers, setAllowJokers] = useState(initialQuiz ? initialQuiz.allowJokers !== false : true);
   const [qs, setQs] = useState(initialQuiz ? initialQuiz.questions : [{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false, note: ''}]);
   
@@ -575,11 +645,12 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
 
   const saveToLib = async () => {
     if(!title) return alert("Titel fehlt!");
+    const cleanFolder = folder.trim(); // Bereinigen
     if (initialQuiz && initialQuiz.id) {
-      await updateDoc(doc(db, 'quiz_templates', initialQuiz.id), { title, questions: qs, allowJokers });
+      await updateDoc(doc(db, 'quiz_templates', initialQuiz.id), { title, folder: cleanFolder, questions: qs, allowJokers });
       alert("Quiz erfolgreich aktualisiert!");
     } else {
-      await setDoc(doc(collection(db,'quiz_templates')), { title, questions: qs, allowJokers, createdAt: Date.now() });
+      await setDoc(doc(collection(db,'quiz_templates')), { title, folder: cleanFolder, questions: qs, allowJokers, createdAt: Date.now() });
       alert("Quiz neu gespeichert!");
     }
   };
@@ -671,21 +742,28 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         </div>
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between bg-white p-6 rounded-3xl border border-sky-100 shadow-sm">
+      <div className="flex flex-col sm:flex-row gap-4 items-start justify-between bg-white p-6 rounded-3xl border border-sky-100 shadow-sm">
         <div className="w-full space-y-4">
-          <div className="flex flex-col sm:flex-row gap-4 justify-between">
-            <input placeholder="Quiz-Name" className="bg-transparent text-2xl font-bold border-b border-sky-200 flex-1 outline-none w-full" value={title} onChange={e=>setTitle(e.target.value)}/>
-            <div className="flex items-center gap-4 flex-wrap w-full sm:w-auto">
-                <div className="flex items-center gap-2 text-sm font-bold text-amber-600 bg-amber-50 px-4 py-2 rounded-xl border border-amber-200 w-full sm:w-auto justify-between">
-                    <label>🌟 Joker-Modus für dieses Quiz?</label>
-                    <input type="checkbox" className="w-5 h-5 accent-amber-500" checked={allowJokers} onChange={e=>setAllowJokers(e.target.checked)}/>
-                </div>
-                <button onClick={saveToLib} className="bg-white p-3 rounded-xl border border-sky-100 shadow-sm flex items-center justify-center gap-2 text-slate-600 font-bold hover:bg-slate-50 transition-colors w-full sm:w-auto">
-                    <Save size={20} className="text-[#E69F00]"/> {initialQuiz ? 'Aktualisieren' : 'Speichern'}
-                </button>
+          
+          <div className="flex flex-col sm:flex-row gap-4 justify-between w-full">
+            <input placeholder="Quiz-Name" className="bg-transparent text-2xl font-bold border-b border-sky-200 flex-1 outline-none w-full text-slate-700" value={title} onChange={e=>setTitle(e.target.value)}/>
+            {/* NEU: ORDNER EINGABEFELD */}
+            <div className="w-full sm:w-1/3 flex items-end">
+                <FolderOpen size={24} className="text-sky-300 mr-2 mb-1"/>
+                <input placeholder="Ordner (Optional)" className="bg-transparent text-lg font-medium border-b border-sky-200 outline-none text-slate-500 w-full focus:border-sky-400" value={folder} onChange={e=>setFolder(e.target.value)}/>
             </div>
           </div>
           
+          <div className="flex flex-col sm:flex-row gap-4 justify-between w-full pt-2">
+             <div className="flex items-center gap-2 text-sm font-bold text-amber-600 bg-amber-50 px-4 py-2 rounded-xl border border-amber-200 w-full sm:w-auto justify-between">
+                 <label>🌟 Joker-Modus für dieses Quiz?</label>
+                 <input type="checkbox" className="w-5 h-5 accent-amber-500 cursor-pointer" checked={allowJokers} onChange={e=>setAllowJokers(e.target.checked)}/>
+             </div>
+             <button onClick={saveToLib} className="bg-white p-3 rounded-xl border border-sky-100 shadow-sm flex items-center justify-center gap-2 text-slate-600 font-bold hover:bg-slate-50 transition-colors w-full sm:w-auto">
+                 <Save size={20} className="text-[#E69F00]"/> {initialQuiz ? 'Aktualisieren' : 'Speichern'}
+             </button>
+          </div>
+
           <div className="flex flex-wrap items-center gap-3 pt-4 border-t border-sky-50">
               <span className="text-xs font-bold text-slate-400 uppercase">Globale Aktionen:</span>
               <button onClick={() => applyGlobal('showAnswers', true)} className="text-xs bg-slate-50 hover:bg-sky-50 text-slate-600 px-3 py-2 rounded-lg border border-slate-200 transition-colors">👁️ Alle Antworten zeigen</button>
@@ -1051,7 +1129,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               <img src={q.imgUrl} className="w-full max-h-[45vh] object-contain rounded-2xl mb-8 bg-slate-50 p-4 border border-sky-50"/>
             )}
 
-            {/* NEU: PLATZHALTER WENN FRAGENTEXT BEIM BUZZER LEER IST */}
             <h2 className="text-4xl md:text-5xl lg:text-6xl font-bold mb-10 leading-tight">{q.q || (q.type === 'buzzer' ? 'Schnelles Spiel: Buzzer aktiv!' : '')}</h2>
 
             {!isBeamer && q.type === 'estimation' && room.status === 'active' && (
@@ -1094,7 +1171,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                     </div>
                 )}
 
-                {/* NEU: DIE NEUEN BUZZER STEUER-BUTTONS (INKL. SPERREN) */}
                 {!isBeamer ? (
                     <div className="flex flex-col gap-4 max-w-2xl mx-auto">
                         <button onClick={()=>onBuzzerCorrect(true)} className="bg-emerald-500 text-white px-8 py-5 rounded-2xl font-bold text-xl flex items-center justify-center gap-3 w-full shadow-md hover:bg-emerald-600 transition-colors"><CheckCircle size={28}/> Richtig (+ Punkte)</button>
@@ -1261,7 +1337,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
   const timeIsUp = q.timer > 0 && room.timeLeft === 0 && room.status === 'active';
   const isJokerActiveNow = player.jokerQuestion === room.currentQuestionIndex;
   
-  // NEU: IST DIESER SPIELER GERADE FÜR DEN BUZZER GESPERRT?
   const isLockedOut = (room.buzzerLockedOut || []).includes(player.id);
 
   const handleBuzzClick = () => {
@@ -1403,14 +1478,12 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
 
         {renderJokerArea()}
         
-        {/* NEU: WENN SPIELER GESPERRT IST (FALSCH GEANTWORTET) */}
         {room.status === 'active' && !room.buzzerWinner && isLockedOut && (
             <div className="w-64 h-64 rounded-full bg-slate-200 border-8 border-slate-300 shadow-inner mx-auto flex items-center justify-center mt-8 cursor-not-allowed">
                 <span className="text-3xl font-black text-slate-400 uppercase tracking-widest">Gesperrt</span>
             </div>
         )}
 
-        {/* WENN FREI */}
         {room.status === 'active' && !room.buzzerWinner && !isLockedOut && (
             <button onClick={handleBuzzClick} className="w-64 h-64 rounded-full bg-red-600 border-8 border-red-800 shadow-[0_10px_0_#7f1d1d,0_0_50px_rgba(220,38,38,0.3)] active:translate-y-[10px] active:shadow-none transition-all mx-auto flex items-center justify-center mt-8">
                 <span className="text-4xl font-black text-white">BUZZER</span>
