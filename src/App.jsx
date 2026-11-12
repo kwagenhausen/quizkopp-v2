@@ -5,29 +5,36 @@ import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
 
 // --- KARTEN IMPORTE ---
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-// --- NEU: ABSOLUT CRASH-SICHERE ICONS OHNE HACKS ---
-const defaultIcon = new L.Icon({
-  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-  shadowSize: [41, 41]
-});
+// --- NEU: ABSOLUT SICHERE ICONS (Keine Prototype-Hacks mehr!) ---
+let defaultIcon;
+let targetIcon;
 
-const targetIcon = new L.Icon({
-  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-  shadowSize: [41, 41]
-});
+const getPinIcon = (isTarget = false) => {
+    if (typeof window === 'undefined') return null; // SSR Schutz
+    if (!defaultIcon) {
+        defaultIcon = new L.Icon({
+            iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+            shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34],
+        });
+    }
+    if (!targetIcon) {
+        targetIcon = new L.Icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
+            shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34],
+        });
+    }
+    return isTarget ? targetIcon : defaultIcon;
+};
 
 // Karten-Schutzschild
 class MapErrorBoundary extends React.Component {
@@ -77,56 +84,17 @@ const MapFitter = ({ bounds }) => {
   return null;
 };
 
-// ABSOLUT CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
-function LocationPicker({ position, onSelect, icon }) {
-  const map = useMap();
-  
-  useEffect(() => {
-    if (!map) return;
-    
-    // Direkter Event-Listener auf das Leaflet-Karten-Objekt
-    const onMapClick = (e) => {
-        if (e.latlng && typeof onSelect === 'function') {
-            onSelect(e.latlng);
-        }
-    };
-
-    map.on('click', onMapClick);
-
-    return () => {
-        map.off('click', onMapClick);
-    };
-  }, [map, onSelect]);
+// CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
+function LocationPicker({ position, onSelect, isTarget }) {
+  useMapEvents({
+      click(e) {
+          if (onSelect) onSelect(e.latlng);
+      }
+  });
 
   if (!position || typeof position.lat !== 'number' || isNaN(position.lat)) return null;
-  return <Marker position={position} {...(icon ? { icon } : {})} />;
+  return <Marker position={[position.lat, position.lng]} icon={getPinIcon(isTarget)} />;
 }
-
-// --- NEU: EIGENSTÄNDIGE KARTE FÜR DEN SETUP-BEREICH ---
-// Diese Komponente isoliert die Karte vom Fragen-Index und verhindert den Crash
-const SetupMap = ({ lat, lng, onLocationChange }) => {
-  // Sichere Fallbacks, falls Werte fehlen oder keine Zahlen sind
-  const safeLat = (lat != null && !isNaN(Number(lat))) ? Number(lat) : 51.165691;
-  const safeLng = (lng != null && !isNaN(Number(lng))) ? Number(lng) : 10.451526;
-  
-  return (
-      <div className="w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative">
-          <MapContainer 
-              center={[safeLat, safeLng]} 
-              zoom={5} 
-              style={{ height: '300px', width: '100%' }}
-              scrollWheelZoom={true}
-          >
-              <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-              <LocationPicker 
-                  position={{lat: safeLat, lng: safeLng}} 
-                  icon={targetIcon || defaultIcon} 
-                  onSelect={onLocationChange} 
-              />
-          </MapContainer>
-      </div>
-  );
-};
 
 // --- KONFIGURATION ---
 const ADMIN_PASSWORD = "quiz"; // DEIN PASSWORT
@@ -484,6 +452,8 @@ export default function App() {
   };
 
   if (loading) return <div className="min-h-screen bg-[#F0F9FF] flex items-center justify-center text-[#1E293B] font-bold">Lade Quizkopp...</div>;
+
+  const isSpecialView = role === 'beamer' || role === 'observer';
 
   return (
     <div className="min-h-screen bg-[#F0F9FF] text-[#1E293B] font-sans">
@@ -991,24 +961,27 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
           )}
           
           {q.type === 'geo' && (
-         <div className="w-full mt-4 bg-sky-50/50 p-4 rounded-2xl border border-sky-100 shadow-inner">
-            <p className="text-sm font-bold text-sky-700 uppercase tracking-widest mb-2">📍 Ziel-Koordinate auf der Karte setzen</p>
-            
-            <MapErrorBoundary>
-               <SetupMap 
-                   lat={q.targetLat} 
-                   lng={q.targetLng} 
-                   onLocationChange={(p) => {
-                       const nQs=[...qs]; 
-                       nQs[qIndex] = { ...nQs[qIndex], targetLat: p.lat, targetLng: p.lng }; 
-                       setQs(nQs);
-                   }} 
-               />
-            </MapErrorBoundary>
-            
-            <p className="text-xs text-slate-400 mt-2">Klicke auf die Karte, um den grünen Lösungs-Pin zu verschieben.</p>
-         </div>
-      )}
+             <div className="w-full mt-4 bg-sky-50/50 p-4 rounded-2xl border border-sky-100 shadow-inner">
+                <p className="text-sm font-bold text-sky-700 uppercase tracking-widest mb-2">📍 Ziel-Koordinate auf der Karte setzen</p>
+                <div className="w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative">
+                    <MapErrorBoundary>
+                        <MapContainer center={[Number(q.targetLat) || 51.165, Number(q.targetLng) || 10.451]} zoom={5} style={{ height: '300px', width: '100%' }}>
+                           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                           <LocationPicker 
+                               position={{lat: Number(q.targetLat) || 51.165, lng: Number(q.targetLng) || 10.451}} 
+                               isTarget={true} 
+                               onSelect={(p) => {
+                                   const nQs=[...qs]; 
+                                   nQs[qIndex] = { ...nQs[qIndex], targetLat: p.lat, targetLng: p.lng }; 
+                                   setQs(nQs);
+                               }} 
+                           />
+                        </MapContainer>
+                    </MapErrorBoundary>
+                </div>
+                <p className="text-xs text-slate-400 mt-2">Klicke auf die Karte, um den grünen Lösungs-Pin zu verschieben.</p>
+             </div>
+          )}
           
           {q.type==='multiple' && <div className="grid grid-cols-2 gap-2">{q.options.map((o,oi)=>(
             <div key={oi} className={`flex gap-2 p-2 rounded border ${q.correctIndex == oi ? 'border-emerald-200 bg-emerald-50' : 'bg-slate-50 border-sky-50'}`}><input type="radio" checked={q.correctIndex==oi} onChange={()=>update(qIndex,'correctIndex',oi)}/><input className="bg-transparent w-full text-slate-700" value={o} onChange={e=>{const no=[...q.options];no[oi]=e.target.value;update(qIndex,'options',no)}}/></div>
@@ -1367,7 +1340,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
                        <MapFitter bounds={mapBounds} />
                        
-                       <Marker position={[safeTargetLat, safeTargetLng]} icon={targetIcon || defaultIcon}>
+                       <Marker position={[safeTargetLat, safeTargetLng]} icon={getPinIcon(true)}>
                            <Popup><b>Zielort</b></Popup>
                        </Marker>
                        
@@ -1378,7 +1351,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                            const dist = calculateDistance(safeTargetLat, safeTargetLng, pLat, pLng);
                            return (
                                <React.Fragment key={p.id}>
-                                   <Marker position={[pLat, pLng]} icon={defaultIcon}>
+                                   <Marker position={[pLat, pLng]} icon={getPinIcon(false)}>
                                        <Popup>
                                            <b>{p.team || p.name}</b><br/>
                                            {dist.toFixed(1)} km
@@ -1479,7 +1452,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                 const basePts = stepInfo ? stepInfo.points : 1;
                 
                 const isGeo = q.type === 'geo';
-                const dist = isGeo && p.currentAnswer?.lat ? calculateDistance(safeTargetLat, safeTargetLng, Number(p.currentAnswer.lat), Number(p.currentAnswer.lng)) : null;
+                const dist = isGeo && p.currentAnswer?.lat ? calculateDistance(safeTargetLat, safeTargetLng, p.currentAnswer.lat, p.currentAnswer.lng) : null;
                 
                 return (
                   <div key={p.id} className="flex flex-col sm:flex-row gap-4 justify-between sm:items-center bg-slate-50 p-6 rounded-2xl border border-sky-50 shadow-sm">
@@ -1491,7 +1464,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                         
                         {isGeo ? (
                             <p className="text-2xl font-black mt-1 text-slate-700">
-                               {dist !== null && !isNaN(dist) ? `${dist.toFixed(1)} km entfernt` : 'Kein Pin gesetzt'}
+                               {dist !== null ? `${dist.toFixed(1)} km entfernt` : 'Kein Pin gesetzt'}
                             </p>
                         ) : (
                             <p className="text-2xl italic mt-1 text-slate-700 font-medium">"{p.currentAnswer||'---'}"</p>
@@ -1865,7 +1838,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
                      <MapErrorBoundary>
                       <MapContainer center={[51.165, 10.451]} zoom={5} style={{ height: '350px', width: '100%' }}>
                          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                         <LocationPicker position={v} onSelect={setV} icon={defaultIcon} />
+                         <LocationPicker position={v} onSelect={setV} icon={getPinIcon(false)} />
                       </MapContainer>
                      </MapErrorBoundary>
                   </div>
