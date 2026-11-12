@@ -4,12 +4,12 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
 
-// --- NEU: KARTEN IMPORTE ---
+// --- KARTEN IMPORTE ---
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-// Fix für die Standard-Leaflet-Icons (damit die Pins richtig laden)
+// Fix für die Standard-Leaflet-Icons
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
@@ -42,16 +42,20 @@ const MapFitter = ({ bounds }) => {
   const map = useMap();
   useEffect(() => { 
       if (bounds && bounds.length > 0) {
-          setTimeout(() => map.fitBounds(bounds, { padding: [50, 50] }), 100);
+          try {
+              setTimeout(() => map.fitBounds(bounds, { padding: [50, 50] }), 100);
+          } catch(e) {} // Fallback falls bounds ungültig sind
       } 
   }, [bounds, map]);
   return null;
 };
 
-// Hilfs-Komponente für den Klick auf die Karte
+// Hilfs-Komponente für den Klick auf die Karte (Crash-sicherer Marker!)
 function LocationPicker({ position, onSelect, icon }) {
   useMapEvents({ click(e) { if(onSelect) onSelect(e.latlng); } });
-  return position && position.lat ? <Marker position={position} icon={icon || new L.Icon.Default()} /> : null;
+  return position && position.lat && !isNaN(position.lat) ? (
+      <Marker position={position} {...(icon ? { icon } : {})} />
+  ) : null;
 }
 
 // --- KONFIGURATION ---
@@ -402,7 +406,6 @@ export default function App() {
          for (const p of players) batch.update(doc(db, 'players', p.id), { wasCorrect: false });
       }
     } else if (q.type === 'geo') {
-      // Geo wird manuell vom Host bewertet, wir setzen nur den Status zurück
       for (const p of players) batch.update(doc(db, 'players', p.id), { wasCorrect: false });
     }
     
@@ -411,8 +414,6 @@ export default function App() {
   };
 
   if (loading) return <div className="min-h-screen bg-[#F0F9FF] flex items-center justify-center text-[#1E293B] font-bold">Lade Quizkopp...</div>;
-
-  const isSpecialView = role === 'beamer' || role === 'observer';
 
   return (
     <div className="min-h-screen bg-[#F0F9FF] text-[#1E293B] font-sans">
@@ -852,7 +853,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                  <option value="estimation">Schätzung</option>
                  <option value="buzzer">Buzzer-Frage</option>
                  <option value="step">Stufen-Rätsel (Hinweise)</option>
-                 {/* NEU: GEO-QUIZ TYPE */}
                  <option value="geo">Geo-Quiz (Karte)</option>
                  <option value="break">⏸️ Pause / Zwischenstand</option>
                </select>
@@ -916,16 +916,19 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
             </div>
           )}
           
-          {/* NEU: ZIELORT-AUSWAHL FÜR GEO-QUIZ */}
           {q.type === 'geo' && (
              <div className="w-full mt-4 bg-sky-50/50 p-4 rounded-2xl border border-sky-100 shadow-inner">
                 <p className="text-sm font-bold text-sky-700 uppercase tracking-widest mb-2">📍 Ziel-Koordinate auf der Karte setzen</p>
                 <div className="h-[300px] w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative">
-                    <MapContainer center={[q.targetLat || 51.165, q.targetLng || 10.451]} zoom={5} style={{ height: '100%', width: '100%' }}>
+                    <MapContainer center={[q.targetLat ?? 51.165, q.targetLng ?? 10.451]} zoom={5} style={{ height: '100%', width: '100%' }}>
                        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                       <LocationPicker position={{lat: q.targetLat || 51.165, lng: q.targetLng || 10.451}} onSelect={(p) => {
-                           const nQs=[...qs]; nQs[i].targetLat = p.lat; nQs[i].targetLng = p.lng; setQs(nQs);
-                       }} />
+                       <LocationPicker 
+                           position={{lat: q.targetLat ?? 51.165, lng: q.targetLng ?? 10.451}} 
+                           icon={targetIcon} 
+                           onSelect={(p) => {
+                               const nQs=[...qs]; nQs[i].targetLat = p.lat; nQs[i].targetLng = p.lng; setQs(nQs);
+                           }} 
+                       />
                     </MapContainer>
                 </div>
                 <p className="text-xs text-slate-400 mt-2">Klicke auf die Karte, um den grünen Lösungs-Pin zu verschieben.</p>
@@ -1205,6 +1208,14 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     );
   }
 
+  // Sichere Geo-Fallbacks für die Auswertung
+  const safeTargetLat = q.targetLat ?? 51.165691;
+  const safeTargetLng = q.targetLng ?? 10.451526;
+  const mapBounds = [
+      [safeTargetLat, safeTargetLng],
+      ...players.filter(p => p.currentAnswer?.lat).map(p => [p.currentAnswer.lat, p.currentAnswer.lng])
+  ].filter(b => b[0] != null && b[1] != null && !isNaN(b[0]) && !isNaN(b[1]));
+
   return (
     <>
       <div className="grid lg:grid-cols-4 gap-8 h-full">
@@ -1275,25 +1286,19 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               </div>
             )}
             
-            {/* NEU: GEO QUIZ REVEAL - DIE GROSSE KARTE FÜR BEAMER UND HOST */}
             {q.type === 'geo' && room.status === 'revealed' && (
                <div className="h-[500px] w-full rounded-3xl overflow-hidden border border-sky-200 z-0 relative mb-8 shadow-inner">
-                   <MapContainer center={[q.targetLat, q.targetLng]} zoom={5} style={{ height: '100%', width: '100%' }}>
+                   <MapContainer center={[safeTargetLat, safeTargetLng]} zoom={5} style={{ height: '100%', width: '100%' }}>
                        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                       <MapFitter bounds={
-                           [
-                               [q.targetLat, q.targetLng],
-                               ...players.filter(p => p.currentAnswer?.lat).map(p => [p.currentAnswer.lat, p.currentAnswer.lng])
-                           ]
-                       } />
-                       {/* Das Ziel */}
-                       <Marker position={[q.targetLat, q.targetLng]} icon={targetIcon}>
+                       <MapFitter bounds={mapBounds} />
+                       
+                       <Marker position={[safeTargetLat, safeTargetLng]} icon={targetIcon}>
                            <Popup><b>Zielort</b></Popup>
                        </Marker>
-                       {/* Die Tipps der Spieler */}
+                       
                        {players.map(p => {
                            if (!p.currentAnswer?.lat) return null;
-                           const dist = calculateDistance(q.targetLat, q.targetLng, p.currentAnswer.lat, p.currentAnswer.lng);
+                           const dist = calculateDistance(safeTargetLat, safeTargetLng, p.currentAnswer.lat, p.currentAnswer.lng);
                            return (
                                <React.Fragment key={p.id}>
                                    <Marker position={[p.currentAnswer.lat, p.currentAnswer.lng]}>
@@ -1303,7 +1308,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                                        </Popup>
                                    </Marker>
                                    <Polyline 
-                                       positions={[[q.targetLat, q.targetLng], [p.currentAnswer.lat, p.currentAnswer.lng]]} 
+                                       positions={[[safeTargetLat, safeTargetLng], [p.currentAnswer.lat, p.currentAnswer.lng]]} 
                                        color="#E69F00" 
                                        weight={3} 
                                        dashArray="5, 10" 
@@ -1385,7 +1390,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
             {room.status === 'revealed' && q.type === 'estimation' && q.showAnswers !== false && renderEstimationAnswers()}
             
-            {/* TEXT, STEP UND NEU: GEO QUIZ AUSWERTUNG */}
             {room.status === 'revealed' && (q.type === 'text' || q.type === 'step' || q.type === 'geo') && <div className="space-y-4 mt-8 border-t border-sky-100 pt-8">
               <h3 className="text-xl font-bold text-slate-600 mb-4">Antworten bewerten</h3>
               {players.map(p => {
@@ -1397,7 +1401,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                 const basePts = stepInfo ? stepInfo.points : 1;
                 
                 const isGeo = q.type === 'geo';
-                const dist = isGeo && p.currentAnswer?.lat ? calculateDistance(q.targetLat, q.targetLng, p.currentAnswer.lat, p.currentAnswer.lng) : null;
+                const dist = isGeo && p.currentAnswer?.lat ? calculateDistance(safeTargetLat, safeTargetLng, p.currentAnswer.lat, p.currentAnswer.lng) : null;
                 
                 return (
                   <div key={p.id} className="flex flex-col sm:flex-row gap-4 justify-between sm:items-center bg-slate-50 p-6 rounded-2xl border border-sky-50 shadow-sm">
@@ -1477,7 +1481,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
           {!isBeamer && (q.type !== 'buzzer' || room.status === 'revealed') && (
             <button onClick={() => room.status === 'active' ? onReveal(q.type === 'estimation' ? liveEstValue : null) : onNext()} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
-              {room.status === 'active' ? 'Lösung aufdecken' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
+              {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
         </div>
@@ -1530,7 +1534,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
   if (!player) return null;
   const q = room.questions[room.currentQuestionIndex];
   
-  // v speichert jetzt bei Geo-Quiz ein Objekt {lat, lng} anstatt Text
   const [v, setV] = useState(q.type === 'geo' ? null : '');
   const [qStartTime, setQStartTime] = useState(Date.now());
   const sortedTeams = getSortedTeams(players, room);
@@ -1778,7 +1781,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
               </div>
           )}
           
-          {/* NEU: GEO-QUIZ SPIELER KARTE */}
           {q.type === 'geo' && (
               <div className="space-y-4">
                   <div className="h-[350px] w-full rounded-2xl overflow-hidden border border-sky-200 z-0 relative shadow-sm">
@@ -1816,12 +1818,11 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
              <div className={`py-10 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
                  <h3 className="text-2xl font-bold">{player.wasCorrect ? successText : 'Leider kein Punkt.'}</h3>
                  
-                 {/* BEIM GEO QUIZ ZEIGEN WIR DEM SPIELER SEINE EIGENE ABWEICHUNG AN */}
                  {q.type === 'geo' && player.currentAnswer?.lat && (
                      <div className="mt-6">
                          <span className="text-xs uppercase font-bold tracking-widest opacity-70 block mb-2 text-slate-500">Dein Ergebnis:</span>
                          <span className="text-2xl font-black bg-white px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-slate-800">
-                             {calculateDistance(q.targetLat, q.targetLng, player.currentAnswer.lat, player.currentAnswer.lng).toFixed(1)} km entfernt
+                             {calculateDistance(q.targetLat ?? 51.165, q.targetLng ?? 10.451, player.currentAnswer.lat, player.currentAnswer.lng).toFixed(1)} km entfernt
                          </span>
                      </div>
                  )}
