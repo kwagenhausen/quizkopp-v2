@@ -94,6 +94,32 @@ function LocationPicker({ position, onSelect, icon }) {
   return <Marker position={[position.lat, position.lng]} icon={icon || defaultIcon} />;
 }
 
+// --- NEU: EIGENSTÄNDIGE KARTE FÜR DEN SETUP-BEREICH ---
+// Diese Komponente isoliert die Karte vom Fragen-Index und verhindert den Crash
+const SetupMap = ({ lat, lng, onLocationChange }) => {
+  // Sichere Fallbacks, falls Werte fehlen oder keine Zahlen sind
+  const safeLat = (lat != null && !isNaN(Number(lat))) ? Number(lat) : 51.165691;
+  const safeLng = (lng != null && !isNaN(Number(lng))) ? Number(lng) : 10.451526;
+  
+  return (
+      <div className="w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative">
+          <MapContainer 
+              center={[safeLat, safeLng]} 
+              zoom={5} 
+              style={{ height: '300px', width: '100%' }}
+              scrollWheelZoom={true}
+          >
+              <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              <LocationPicker 
+                  position={{lat: safeLat, lng: safeLng}} 
+                  icon={targetIcon || defaultIcon} 
+                  onSelect={onLocationChange} 
+              />
+          </MapContainer>
+      </div>
+  );
+};
+
 // --- KONFIGURATION ---
 const ADMIN_PASSWORD = "quiz"; // DEIN PASSWORT
 
@@ -957,27 +983,24 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
           )}
           
           {q.type === 'geo' && (
-             <div className="w-full mt-4 bg-sky-50/50 p-4 rounded-2xl border border-sky-100 shadow-inner">
-                <p className="text-sm font-bold text-sky-700 uppercase tracking-widest mb-2">📍 Ziel-Koordinate auf der Karte setzen</p>
-                <div className="w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative">
-                    <MapErrorBoundary>
-                        <MapContainer center={[Number(q.targetLat) || 51.165, Number(q.targetLng) || 10.451]} zoom={5} style={{ height: '300px', width: '100%' }}>
-                           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                           <LocationPicker 
-                               position={{lat: Number(q.targetLat) || 51.165, lng: Number(q.targetLng) || 10.451}} 
-                               icon={targetIcon || defaultIcon} 
-                               onSelect={(p) => {
-                                   const nQs=[...qs]; 
-                                   nQs[qIndex] = { ...nQs[qIndex], targetLat: p.lat, targetLng: p.lng }; 
-                                   setQs(nQs);
-                               }} 
-                           />
-                        </MapContainer>
-                    </MapErrorBoundary>
-                </div>
-                <p className="text-xs text-slate-400 mt-2">Klicke auf die Karte, um den grünen Lösungs-Pin zu verschieben.</p>
-             </div>
-          )}
+         <div className="w-full mt-4 bg-sky-50/50 p-4 rounded-2xl border border-sky-100 shadow-inner">
+            <p className="text-sm font-bold text-sky-700 uppercase tracking-widest mb-2">📍 Ziel-Koordinate auf der Karte setzen</p>
+            
+            <MapErrorBoundary>
+               <SetupMap 
+                   lat={q.targetLat} 
+                   lng={q.targetLng} 
+                   onLocationChange={(p) => {
+                       const nQs=[...qs]; 
+                       nQs[qIndex] = { ...nQs[qIndex], targetLat: p.lat, targetLng: p.lng }; 
+                       setQs(nQs);
+                   }} 
+               />
+            </MapErrorBoundary>
+            
+            <p className="text-xs text-slate-400 mt-2">Klicke auf die Karte, um den grünen Lösungs-Pin zu verschieben.</p>
+         </div>
+      )}
           
           {q.type==='multiple' && <div className="grid grid-cols-2 gap-2">{q.options.map((o,oi)=>(
             <div key={oi} className={`flex gap-2 p-2 rounded border ${q.correctIndex == oi ? 'border-emerald-200 bg-emerald-50' : 'bg-slate-50 border-sky-50'}`}><input type="radio" checked={q.correctIndex==oi} onChange={()=>update(qIndex,'correctIndex',oi)}/><input className="bg-transparent w-full text-slate-700" value={o} onChange={e=>{const no=[...q.options];no[oi]=e.target.value;update(qIndex,'options',no)}}/></div>
