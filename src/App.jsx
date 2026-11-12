@@ -147,6 +147,21 @@ const downloadCSV = (players, room) => {
   a.href = url; a.download = `Quizkopp_Export_${room.id}.csv`; a.click();
 };
 
+const getBaseQuestionTemplate = () => ({
+    type:'multiple',
+    q:'',
+    options:['','','',''],
+    correctIndex:0,
+    correctValue:'',
+    timer:0,
+    imgUrl:'',
+    showImg:true, 
+    showAnswers: true, 
+    isJoker: false, 
+    note: '',
+    steps: [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}] // Default Steps
+});
+
 // --- HAUPT-APP ---
 export default function App() {
   const [user, setUser] = useState(null);
@@ -189,7 +204,7 @@ export default function App() {
   const createRoom = async (questions, allowJokers = true) => {
     const code = generateRoomCode();
     await setDoc(doc(db, 'rooms', code), {
-      hostId: user.uid, status: 'lobby', currentQuestionIndex: 0, questions,
+      hostId: user.uid, status: 'lobby', currentQuestionIndex: 0, currentStepIndex: 0, questions,
       timeLeft: questions[0].timer || 0, buzzerWinner: null, buzzerLockedOut: [], teamScores: {}, allowJokers: allowJokers, createdAt: Date.now()
     });
     setCurrentRoomCode(code); setRole('host');
@@ -351,6 +366,8 @@ export default function App() {
 
   if (loading) return <div className="min-h-screen bg-[#F0F9FF] flex items-center justify-center text-[#1E293B] font-bold">Lade Quizkopp...</div>;
 
+  const isSpecialView = role === 'beamer' || role === 'observer';
+
   return (
     <div className="min-h-screen bg-[#F0F9FF] text-[#1E293B] font-sans">
       <header className="bg-white border-b border-sky-100 p-4 sticky top-0 z-10 shadow-sm">
@@ -384,7 +401,7 @@ export default function App() {
                     await updateDoc(doc(db, 'players', user.uid), { team: t });
                 }
             } else {
-                await setDoc(doc(db,'players',user.uid),{name:playerName, team:t, roomCode:roomCode, score:0, currentAnswer:null, answers:{}, jokerUsed: false, jokerQuestion: null, isBullseye: false});
+                await setDoc(doc(db,'players',user.uid),{name:playerName, team:t, roomCode:roomCode, score:0, currentAnswer:null, answers:{}, jokerUsed: false, jokerQuestion: null, isBullseye: false, stepLockedIn: null});
             }
             setCurrentRoomCode(roomCode); setRole('player');
         }} onAdmin={() => setAdminAuth('login')} onJoinBeamer={(c) => {
@@ -410,11 +427,12 @@ export default function App() {
             const nextIdx = activeRoom.currentQuestionIndex + 1;
             const batch = writeBatch(db);
             for(const p of players) {
-              batch.update(doc(db,'players',p.id),{currentAnswer:null, corrected:false, wasCorrect:null, currentAwardedPoints:0, isBullseye: false});
+              batch.update(doc(db,'players',p.id),{currentAnswer:null, corrected:false, wasCorrect:null, currentAwardedPoints:0, isBullseye: false, stepLockedIn: null});
             }
             batch.update(doc(db,'rooms',currentRoomCode),{
               status:last?'finished':'active',
               currentQuestionIndex:last?activeRoom.currentQuestionIndex:nextIdx,
+              currentStepIndex: 0,
               timeLeft:activeRoom.questions[nextIdx]?.timer || 0, 
               buzzerWinner: null, 
               buzzerReaction: null,
@@ -424,7 +442,11 @@ export default function App() {
         }} onCorrect={manualCorrect} onBuzzerCorrect={handleBuzzerHost} onBuzzerWrongContinue={handleBuzzerWrongContinue} db={db}/>}
 
         {role === 'player' && activeRoom && <PlayerDashboard room={activeRoom} player={myProfile} players={players} onAnswer={async v => {
-            await updateDoc(doc(db,'players',user.uid),{currentAnswer:v,[`answers.${activeRoom.currentQuestionIndex}`]:v});
+            await updateDoc(doc(db,'players',user.uid),{
+                currentAnswer:v,
+                [`answers.${activeRoom.currentQuestionIndex}`]:v,
+                stepLockedIn: activeRoom.currentStepIndex || 0
+            });
         }} onUseJoker={async () => {
             if(window.confirm("Bist du sicher? Der Joker kann nur EINMAL pro Quiz eingesetzt werden!")) {
                 await updateDoc(doc(db, 'players', user.uid), { jokerUsed: true, jokerQuestion: activeRoom.currentQuestionIndex });
@@ -509,7 +531,6 @@ function AdminPanel({ onNew, onLib, onLogout }) {
   );
 }
 
-// --- NEU: DIE BIBLIOTHEK MIT ORDNER-FUNKTION ---
 function Library({ onSelect, onEdit, onBack, db }) {
   const [t, setT] = useState([]);
   const [currentFolder, setCurrentFolder] = useState(null);
@@ -525,10 +546,8 @@ function Library({ onSelect, onEdit, onBack, db }) {
     } 
   };
   
-  // Alle existierenden, eindeutigen Ordnernamen finden (leere ignorieren)
   const folders = [...new Set(t.map(q => q.folder).filter(f => f && f.trim() !== ''))].sort();
 
-  // Zeigt entweder alle Quizzes im aktuellen Ordner, oder alle OHNE Ordner (wenn auf Startseite)
   const displayQuizzes = currentFolder 
     ? t.filter(q => q.folder === currentFolder) 
     : t.filter(q => !q.folder || q.folder.trim() === '');
@@ -605,10 +624,9 @@ function Library({ onSelect, onEdit, onBack, db }) {
 
 function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   const [title, setTitle] = useState(initialQuiz ? initialQuiz.title : '');
-  // --- NEU: FOLDER STATE ---
   const [folder, setFolder] = useState(initialQuiz ? initialQuiz.folder || '' : '');
   const [allowJokers, setAllowJokers] = useState(initialQuiz ? initialQuiz.allowJokers !== false : true);
-  const [qs, setQs] = useState(initialQuiz ? initialQuiz.questions : [{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false, note: ''}]);
+  const [qs, setQs] = useState(initialQuiz ? initialQuiz.questions : [getBaseQuestionTemplate()]);
   
   const fileInputRef = useRef(null);
 
@@ -630,7 +648,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
 
   const insertQAfter = (index) => {
     const n = [...qs];
-    n.splice(index + 1, 0, {type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false, note: ''});
+    n.splice(index + 1, 0, getBaseQuestionTemplate());
     setQs(n);
   };
 
@@ -645,7 +663,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
 
   const saveToLib = async () => {
     if(!title) return alert("Titel fehlt!");
-    const cleanFolder = folder.trim(); // Bereinigen
+    const cleanFolder = folder.trim();
     if (initialQuiz && initialQuiz.id) {
       await updateDoc(doc(db, 'quiz_templates', initialQuiz.id), { title, folder: cleanFolder, questions: qs, allowJokers });
       alert("Quiz erfolgreich aktualisiert!");
@@ -709,7 +727,8 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
           showImg: true,
           showAnswers: true,
           isJoker: false,
-          note: cols[9] || ""
+          note: cols[9] || "",
+          steps: [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}]
         };
 
         newQuestions.push(parsedQ);
@@ -747,7 +766,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
           
           <div className="flex flex-col sm:flex-row gap-4 justify-between w-full">
             <input placeholder="Quiz-Name" className="bg-transparent text-2xl font-bold border-b border-sky-200 flex-1 outline-none w-full text-slate-700" value={title} onChange={e=>setTitle(e.target.value)}/>
-            {/* NEU: ORDNER EINGABEFELD */}
             <div className="w-full sm:w-1/3 flex items-end">
                 <FolderOpen size={24} className="text-sky-300 mr-2 mb-1"/>
                 <input placeholder="Ordner (Optional)" className="bg-transparent text-lg font-medium border-b border-sky-200 outline-none text-slate-500 w-full focus:border-sky-400" value={folder} onChange={e=>setFolder(e.target.value)}/>
@@ -778,14 +796,21 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         <div key={i} className="bg-white p-6 rounded-3xl border border-sky-100 shadow-md space-y-4">
           
           <div className="flex flex-col md:flex-row gap-4">
-            <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : "Frage (oder leer für reine Buzzer-Runde)..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50 outline-none focus:border-sky-200" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
+            <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : q.type === 'step' ? "Kategorie / Hauptfrage (z.B. 'Wer bin ich?')..." : "Frage (oder leer für reine Buzzer-Runde)..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50 outline-none focus:border-sky-200 font-bold" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
             
             <div className="flex items-center gap-2">
-               <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700 h-full outline-none focus:border-sky-200" value={q.type} onChange={e=>update(i,'type',e.target.value)}>
+               <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700 h-full outline-none focus:border-sky-200 font-bold" value={q.type} onChange={e=> {
+                  const val = e.target.value;
+                  const n = [...qs];
+                  n[i].type = val;
+                  if (val === 'step' && !n[i].steps) n[i].steps = [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}];
+                  setQs(n);
+               }}>
                  <option value="multiple">Multiple Choice</option>
                  <option value="text">Freitext</option>
                  <option value="estimation">Schätzung</option>
                  <option value="buzzer">Buzzer-Frage</option>
+                 <option value="step">Stufen-Rätsel (Hinweise)</option>
                  <option value="break">⏸️ Pause / Zwischenstand</option>
                </select>
                
@@ -813,7 +838,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                 </div>
               )}
 
-              {q.type !== 'text' && q.type !== 'buzzer' && (
+              {q.type !== 'text' && q.type !== 'buzzer' && q.type !== 'step' && (
                   <div className="flex items-center gap-2 text-xs text-slate-400 border-l border-sky-100 pl-4 ml-2">
                       <label>Antworten auf Beamer zeigen?</label>
                       <input type="checkbox" checked={q.showAnswers !== false} onChange={e=>update(i,'showAnswers',e.target.checked)}/>
@@ -825,6 +850,27 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                   <Clock size={16} className="text-[#E69F00]"/><input type="number" min="0" className="w-16 bg-slate-50 p-2 rounded border border-sky-50" value={q.timer} onChange={e=>update(i,'timer',parseInt(e.target.value) || 0)}/>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* NEU: HINWEISE FÜR STUFEN-RÄTSEL */}
+          {q.type === 'step' && (
+            <div className="space-y-3 mt-4 bg-sky-50/50 p-6 rounded-2xl border border-sky-100 shadow-inner">
+               <div className="flex justify-between items-center mb-2">
+                   <p className="text-sm font-bold text-sky-700 uppercase tracking-widest">🪜 Hinweise & Punkte konfigurieren</p>
+               </div>
+               
+               {(q.steps || []).map((step, sIdx) => (
+                   <div key={sIdx} className="flex gap-3 items-center">
+                       <span className="font-black text-sky-300 w-6 text-right">{sIdx + 1}.</span>
+                       <input placeholder={`Hinweis ${sIdx + 1}...`} className="flex-1 p-3 rounded-xl border border-sky-100 outline-none focus:border-sky-300 shadow-sm" value={step.text} onChange={e => { const nQs=[...qs]; nQs[i].steps[sIdx].text = e.target.value; setQs(nQs); }}/>
+                       <input type="number" className="w-24 p-3 rounded-xl border border-sky-100 outline-none focus:border-sky-300 shadow-sm text-center font-bold text-[#E69F00]" placeholder="Punkte" value={step.points} onChange={e => { const nQs=[...qs]; nQs[i].steps[sIdx].points = Number(e.target.value); setQs(nQs); }} title="Punkte für diesen Hinweis"/>
+                       <button onClick={() => { const nQs=[...qs]; nQs[i].steps.splice(sIdx, 1); setQs(nQs); }} className="text-red-400 p-3 hover:bg-red-50 rounded-xl transition-colors"><Trash2 size={20}/></button>
+                   </div>
+               ))}
+               <button onClick={() => { const nQs=[...qs]; if(!nQs[i].steps) nQs[i].steps = []; nQs[i].steps.push({text:'', points: 1}); setQs(nQs); }} className="text-sm text-sky-600 font-bold hover:text-sky-800 transition-colors flex items-center gap-1 mt-2">
+                   <Plus size={16}/> Weiteren Hinweis hinzufügen
+               </button>
             </div>
           )}
           
@@ -842,7 +888,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         </div>
       ))}
       <div className="flex gap-4">
-        <button onClick={()=>setQs([...qs,{type:'multiple',q:'',options:['','','',''],correctIndex:0,correctValue:'',timer:0,imgUrl:'',showImg:true, showAnswers: true, isJoker: false, note: ''}])} className="flex-1 bg-white py-3 rounded-2xl border border-sky-100 font-bold shadow-sm text-slate-500">+ Frage ganz unten hinzufügen</button>
+        <button onClick={()=>setQs([...qs, getBaseQuestionTemplate()])} className="flex-1 bg-white py-3 rounded-2xl border border-sky-100 font-bold shadow-sm text-slate-500">+ Frage ganz unten hinzufügen</button>
         <button onClick={()=>onCreate(qs, allowJokers)} className="flex-1 bg-emerald-500 text-white py-3 rounded-2xl font-bold shadow-lg">Quiz starten</button>
       </div>
     </div>
@@ -875,7 +921,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     if (!showSimulator) {
         await setDoc(doc(db, 'players', demoId), {
             name: '📱 Demo Tester', team: 'Test Team', roomCode: room.id, 
-            score: 0, currentAnswer: null, answers: {}, jokerUsed: false, jokerQuestion: null
+            score: 0, currentAnswer: null, answers: {}, jokerUsed: false, jokerQuestion: null, stepLockedIn: null
         });
         setShowSimulator(true);
     } else {
@@ -995,7 +1041,13 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             </div>
             <div className="flex-1 overflow-y-auto bg-[#F0F9FF] p-4 relative custom-scrollbar">
                 <PlayerDashboard room={room} player={demoPlayer} players={players} 
-                   onAnswer={async v => { await updateDoc(doc(db, 'players', demoPlayer.id), { currentAnswer: v, [`answers.${room.currentQuestionIndex}`]: v }); }}
+                   onAnswer={async v => { 
+                       await updateDoc(doc(db, 'players', demoPlayer.id), { 
+                           currentAnswer: v, 
+                           [`answers.${room.currentQuestionIndex}`]: v,
+                           stepLockedIn: room.currentStepIndex || 0 
+                       }); 
+                   }}
                    onBuzz={async (rt) => { if(!room.buzzerWinner && !(room.buzzerLockedOut || []).includes(demoPlayer.id)) { await updateDoc(doc(db,'rooms',room.id),{buzzerWinner: demoPlayer.id, buzzerWinnerName: demoPlayer.name, buzzerReaction: rt}); } }}
                    onUseJoker={async () => { if(window.confirm("Bist du sicher? Der Joker kann nur EINMAL pro Quiz eingesetzt werden!")) { await updateDoc(doc(db, 'players', demoPlayer.id), { jokerUsed: true, jokerQuestion: room.currentQuestionIndex }); } }}
                 />
@@ -1110,7 +1162,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                  )}
                </div>
                <div className="flex gap-3 ml-auto">
-                 {q.type !== 'buzzer' && <div className="flex items-center gap-3 text-[#E69F00] font-mono text-4xl font-bold bg-slate-50 px-6 py-2 rounded-full border border-sky-50"><Clock size={32}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</div>}
+                 {q.type !== 'buzzer' && q.type !== 'step' && <div className="flex items-center gap-3 text-[#E69F00] font-mono text-4xl font-bold bg-slate-50 px-6 py-2 rounded-full border border-sky-50"><Clock size={32}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</div>}
                  {q.type === 'buzzer' && <div className="flex items-center gap-3 text-red-500 font-bold uppercase text-2xl bg-red-50 px-6 py-2 rounded-full text-red-600 animate-pulse"><Bell size={28}/> Buzzer aktiv</div>}
                </div>
             </div>
@@ -1130,6 +1182,28 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             )}
 
             <h2 className="text-4xl md:text-5xl lg:text-6xl font-bold mb-10 leading-tight">{q.q || (q.type === 'buzzer' ? 'Schnelles Spiel: Buzzer aktiv!' : '')}</h2>
+
+            {/* NEU: DARSTELLUNG DER STUFEN / HINWEISE FÜR BEAMER UND HOST */}
+            {q.type === 'step' && room.status === 'active' && (
+              <div className="mt-4 space-y-4 mb-8">
+                {q.steps && q.steps.slice(0, (room.currentStepIndex || 0) + 1).map((s, idx) => (
+                    <div key={idx} className="bg-sky-50 border-2 border-sky-200 p-6 rounded-2xl shadow-sm transition-all animate-[pulse_0.5s_ease-out]">
+                        <span className="font-black text-sky-600 text-xl mr-3">Hinweis {idx + 1}:</span>
+                        <span className="text-2xl text-slate-800 font-medium">{s.text}</span>
+                        <span className="float-right bg-sky-200 text-sky-800 text-sm px-3 py-1 rounded-lg font-bold shadow-sm">{s.points} Punkte</span>
+                    </div>
+                ))}
+
+                {/* NUR HOST: BUTTON FÜR NÄCHSTEN HINWEIS */}
+                {!isBeamer && q.steps && (room.currentStepIndex || 0) < q.steps.length - 1 && (
+                    <button onClick={async () => {
+                        await updateDoc(doc(db, 'rooms', room.id), { currentStepIndex: (room.currentStepIndex || 0) + 1 });
+                    }} className="w-full bg-sky-100 hover:bg-sky-200 text-sky-700 font-bold py-6 rounded-2xl transition-colors mt-6 shadow-sm border border-sky-200 text-xl flex items-center justify-center gap-2">
+                        <Plus size={28}/> Nächsten Hinweis aufdecken
+                    </button>
+                )}
+              </div>
+            )}
 
             {!isBeamer && q.type === 'estimation' && room.status === 'active' && (
               <div className="bg-blue-50 border border-blue-200 p-6 rounded-3xl mb-8 shadow-inner">
@@ -1215,11 +1289,17 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
             {room.status === 'revealed' && q.type === 'estimation' && q.showAnswers !== false && renderEstimationAnswers()}
             
-            {room.status === 'revealed' && q.type === 'text' && <div className="space-y-4 mt-8 border-t border-sky-100 pt-8">
+            {/* TEXT UND NEU: STUFEN-RÄTSEL AUSWERTUNG */}
+            {room.status === 'revealed' && (q.type === 'text' || q.type === 'step') && <div className="space-y-4 mt-8 border-t border-sky-100 pt-8">
               <h3 className="text-xl font-bold text-slate-600 mb-4">Antworten bewerten</h3>
               {players.map(p => {
                 const pUsedJoker = p.jokerQuestion === room.currentQuestionIndex;
                 const mult = pUsedJoker ? 2 : 1;
+                
+                // Für Stufen-Rätsel: Wieviele Punkte war der Hinweis wert?
+                const hasStepData = q.type === 'step' && p.stepLockedIn !== undefined && p.stepLockedIn !== null;
+                const stepInfo = hasStepData ? q.steps[p.stepLockedIn] : null;
+                const basePts = stepInfo ? stepInfo.points : 1;
                 
                 return (
                   <div key={p.id} className="flex flex-col sm:flex-row gap-4 justify-between sm:items-center bg-slate-50 p-6 rounded-2xl border border-sky-50 shadow-sm">
@@ -1228,13 +1308,26 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                            {p.name} {p.team && <span className="text-xs text-slate-400">({p.team})</span>}
                            {pUsedJoker && <span className="text-amber-500 text-lg" title="Joker eingesetzt!">🌟</span>}
                         </span>
-                        <p className="text-2xl italic mt-1">"{p.currentAnswer||'---'}"</p>
+                        <p className="text-2xl italic mt-1 text-slate-700 font-medium">"{p.currentAnswer||'---'}"</p>
+                        
+                        {hasStepData && (
+                            <span className="text-xs font-bold text-sky-700 bg-sky-100 px-3 py-1 rounded-md border border-sky-200 mt-2 inline-block">
+                                Eingeloggt bei Hinweis {p.stepLockedIn + 1} (Mögliche Punkte: {basePts * mult})
+                            </span>
+                        )}
                     </div>
                     {!isBeamer ? (
                         <div className="flex gap-2">
                             <button onClick={()=>onCorrect(p.id, 0)} className={`p-4 rounded-xl shadow-sm transition-all ${p.corrected && p.currentAwardedPoints === 0 ? 'bg-red-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-red-500'}`} title="0 Punkte"><XCircle size={32}/></button>
-                            <button onClick={()=>onCorrect(p.id, 0.5)} className={`p-4 rounded-xl shadow-sm transition-all font-black text-2xl w-[64px] flex justify-center items-center ${p.corrected && p.currentAwardedPoints === 0.5 * mult ? 'bg-orange-400 text-white scale-105' : 'bg-white text-slate-300 hover:text-orange-400'}`} title={mult === 2 ? "0.5 Punkte (x2 Joker = 1 Punkt)" : "0.5 Punkte"}>½</button>
-                            <button onClick={()=>onCorrect(p.id, 1)} className={`p-4 rounded-xl shadow-sm transition-all ${p.corrected && p.currentAwardedPoints === 1 * mult ? 'bg-emerald-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-emerald-500'}`} title={mult === 2 ? "1 Punkt (x2 Joker = 2 Punkte)" : "1 Punkt"}><CheckCircle size={32}/></button>
+                            
+                            {q.type === 'text' && (
+                                <button onClick={()=>onCorrect(p.id, 0.5)} className={`p-4 rounded-xl shadow-sm transition-all font-black text-2xl w-[64px] flex justify-center items-center ${p.corrected && p.currentAwardedPoints === 0.5 * mult ? 'bg-orange-400 text-white scale-105' : 'bg-white text-slate-300 hover:text-orange-400'}`} title={mult === 2 ? "0.5 Punkte (x2 Joker = 1 Punkt)" : "0.5 Punkte"}>½</button>
+                            )}
+                            
+                            <button onClick={()=>onCorrect(p.id, basePts)} className={`p-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-1 ${p.corrected && p.currentAwardedPoints === basePts * mult ? 'bg-emerald-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-emerald-500'}`} title={mult === 2 ? `${basePts} Punkte (x2 Joker = ${basePts * 2} Punkte)` : `${basePts} Punkt(e)`}>
+                                <CheckCircle size={32}/> 
+                                {q.type === 'step' && <span className="text-lg font-black">{basePts * mult}</span>}
+                            </button>
                         </div>
                     ) : (
                         <div className="flex items-center justify-center font-black text-2xl">
@@ -1450,7 +1543,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
   if (player.wasCorrect) {
       if (q.type === 'estimation' && player.isBullseye) {
           successText = isJokerActiveNow ? '🎯🌟 VOLLTREFFER! 4 Punkte für euch!' : '🎯 VOLLTREFFER! 2 Punkte für euch!';
-      } else if (q.type === 'text' && player.currentAwardedPoints !== undefined) {
+      } else if ((q.type === 'text' || q.type === 'step') && player.currentAwardedPoints !== undefined) {
           successText = isJokerActiveNow ? `🌟 ${player.currentAwardedPoints} Punkte für euch!` : `${player.currentAwardedPoints} Punkt${player.currentAwardedPoints !== 1 ? 'e' : ''} für euch!`;
       } else {
           successText = isJokerActiveNow ? '🌟 2 Punkte für euch!' : 'Punkt für euch!';
@@ -1545,12 +1638,31 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
          </div>
       )}
 
+      {/* NEU: HINWEIS-ANZEIGE FÜR STUFEN-RÄTSEL AUF DEM HANDY */}
+      {q.type === 'step' && room.status === 'active' && (
+        <div className="space-y-3 mb-6">
+            <h3 className="font-bold text-slate-500 uppercase tracking-widest text-xs">Aktuelle Hinweise:</h3>
+            {q.steps && q.steps.slice(0, (room.currentStepIndex || 0) + 1).map((s, idx) => (
+                <div key={idx} className="bg-sky-50 border border-sky-100 p-3 rounded-xl shadow-sm text-sm">
+                    <span className="font-bold text-sky-600 mr-2">{idx + 1}.</span> {s.text}
+                </div>
+            ))}
+        </div>
+      )}
+
       {renderJokerArea()}
       
       {room.status === 'active' && !hasAnswered && !timeIsUp && (
         <div className="space-y-3 pt-2">
           {q.type === 'multiple' && q.options.map((o,i)=><button key={i} onClick={()=>onAnswer(i)} className="w-full bg-white p-5 rounded-2xl text-left border border-sky-100 shadow-sm font-medium active:bg-sky-50 active:scale-[0.98] transition-all">{o}</button>)}
-          {(q.type === 'text' || q.type === 'estimation') && <div className="space-y-4"><input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-5 rounded-2xl border border-sky-100 outline-none focus:border-[#E69F00]" value={v} onChange={e=>setV(e.target.value)} placeholder="Antwort..."/><button onClick={()=>onAnswer(v)} disabled={!v} className="w-full bg-[#E69F00] text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">Abschicken</button></div>}
+          {(q.type === 'text' || q.type === 'estimation' || q.type === 'step') && (
+              <div className="space-y-4">
+                  <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-5 rounded-2xl border border-sky-100 outline-none focus:border-[#E69F00]" value={v} onChange={e=>setV(e.target.value)} placeholder="Antwort..."/>
+                  <button onClick={()=>onAnswer(v)} disabled={!v} className="w-full bg-[#E69F00] text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">
+                      Abschicken
+                  </button>
+              </div>
+          )}
         </div>
       )}
 
@@ -1563,14 +1675,15 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
       
       {hasAnswered && room.status === 'active' && <div className="text-center py-12 bg-white rounded-3xl border border-sky-100 shadow-inner text-[#E69F00] font-bold text-lg flex flex-col items-center gap-2"><CheckCircle size={32}/> Antwort eingeloggt!</div>}
       
-      {room.status === 'revealed' && q.type === 'text' && !player.corrected && (
+      {/* NEU: WARTEN-ANZEIGE AUCH FÜR STEP ANGEPASST */}
+      {room.status === 'revealed' && (q.type === 'text' || q.type === 'step') && !player.corrected && (
           <div className="py-12 rounded-3xl border-2 text-center bg-slate-50 border-sky-100 text-slate-400 shadow-inner animate-pulse">
              <h3 className="text-xl font-bold">Quizmaster wertet aus...</h3>
              <p className="text-sm mt-2">Warte auf die Entscheidung.</p>
           </div>
       )}
       
-      {room.status === 'revealed' && (q.type !== 'text' || player.corrected) && typeof player.wasCorrect === 'boolean' && (
+      {room.status === 'revealed' && ((q.type !== 'text' && q.type !== 'step') || player.corrected) && typeof player.wasCorrect === 'boolean' && (
          <div className="mt-8 space-y-4">
              <div className={`py-10 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
                  <h3 className="text-2xl font-bold">{player.wasCorrect ? successText : 'Leider kein Punkt.'}</h3>
@@ -1661,7 +1774,6 @@ function ObserverDashboard({ room, players }) {
         </div>
       )}
 
-      {/* TEXT FALLBACK WENN LEER */}
       <h2 className="text-2xl font-bold leading-tight mb-2">{q.q || (q.type === 'buzzer' ? 'Buzzer-Runde' : '')}</h2>
 
       {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
@@ -1671,6 +1783,18 @@ function ObserverDashboard({ room, players }) {
             <span className="text-sm font-bold uppercase tracking-widest">Achtung Beamer</span>
             <span className="text-xs text-slate-400 mt-1">Audio / Video läuft beim Quizmaster</span>
          </div>
+      )}
+
+      {/* NEU: HINWEIS-ANZEIGE FÜR STUFEN-RÄTSEL AUCH FÜR ZUSCHAUER */}
+      {q.type === 'step' && room.status === 'active' && (
+        <div className="space-y-3 mb-6">
+            <h3 className="font-bold text-slate-500 uppercase tracking-widest text-xs">Aktuelle Hinweise:</h3>
+            {q.steps && q.steps.slice(0, (room.currentStepIndex || 0) + 1).map((s, idx) => (
+                <div key={idx} className="bg-sky-50 border border-sky-100 p-3 rounded-xl shadow-sm text-sm">
+                    <span className="font-bold text-sky-600 mr-2">{idx + 1}.</span> {s.text}
+                </div>
+            ))}
+        </div>
       )}
 
       {room.status === 'active' && (
