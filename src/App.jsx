@@ -77,21 +77,29 @@ const MapFitter = ({ bounds }) => {
   return null;
 };
 
-// CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
+// ABSOLUT CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
 function LocationPicker({ position, onSelect, icon }) {
   const map = useMap();
   
   useEffect(() => {
     if (!map) return;
+    
+    // Direkter Event-Listener auf das Leaflet-Karten-Objekt
     const onMapClick = (e) => {
-        if (typeof onSelect === 'function') onSelect(e.latlng);
+        if (e.latlng && typeof onSelect === 'function') {
+            onSelect(e.latlng);
+        }
     };
+
     map.on('click', onMapClick);
-    return () => { map.off('click', onMapClick); };
+
+    return () => {
+        map.off('click', onMapClick);
+    };
   }, [map, onSelect]);
 
   if (!position || typeof position.lat !== 'number' || isNaN(position.lat)) return null;
-  return <Marker position={[position.lat, position.lng]} icon={icon || defaultIcon} />;
+  return <Marker position={position} {...(icon ? { icon } : {})} />;
 }
 
 // --- NEU: EIGENSTÄNDIGE KARTE FÜR DEN SETUP-BEREICH ---
