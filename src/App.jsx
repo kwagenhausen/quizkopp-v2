@@ -5,39 +5,31 @@ import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
 
 // --- KARTEN IMPORTE ---
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-// Fix für die Standard-Leaflet-Icons (Crash-sicher)
-if (typeof window !== 'undefined') {
-    try {
-        delete L.Icon.Default.prototype._getIconUrl;
-        L.Icon.Default.mergeOptions({
-          iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-          iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-          shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-        });
-    } catch (e) { console.error("Leaflet Icon Error:", e); }
-}
+// --- NEU: ABSOLUT CRASH-SICHERE ICONS OHNE HACKS ---
+const defaultIcon = new L.Icon({
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41]
+});
 
-// Unser grüner Ziel-Pin
-const getTargetIcon = () => {
-    if (typeof window === 'undefined') return null;
-    try {
-        return new L.Icon({
-          iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
-          shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-          iconSize: [25, 41],
-          iconAnchor: [12, 41],
-          popupAnchor: [1, -34],
-          shadowSize: [41, 41]
-        });
-    } catch(e) { return null; }
-};
-const targetIcon = getTargetIcon();
+const targetIcon = new L.Icon({
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41]
+});
 
-// --- NEU: DER KARTEN-SCHUTZSCHILD (ERROR BOUNDARY) ---
+// Karten-Schutzschild
 class MapErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -46,21 +38,13 @@ class MapErrorBoundary extends React.Component {
   static getDerivedStateFromError(error) {
     return { hasError: true, errorMsg: error.message || error.toString() };
   }
-  componentDidCatch(error, errorInfo) {
-    console.error("Karten Crash abgefangen:", error, errorInfo);
-  }
   render() {
     if (this.state.hasError) {
       return (
         <div className="p-6 bg-red-50 border border-red-200 text-red-600 rounded-2xl w-full flex flex-col items-center justify-center text-center">
-          <span className="font-bold text-lg mb-2 flex items-center gap-2"><XCircle size={24}/> Karte abgestürzt</span>
-          <p className="text-sm mb-4">Aber die App läuft weiter! Hier ist der Fehler:</p>
-          <code className="text-xs bg-white p-3 rounded-xl border border-red-100 text-red-400 max-w-full overflow-x-auto mb-4 font-mono shadow-inner">
-              {this.state.errorMsg}
-          </code>
-          <button onClick={() => this.setState({ hasError: false })} className="bg-red-100 hover:bg-red-200 px-6 py-3 rounded-xl text-red-800 font-bold transition-colors shadow-sm">
-              Karte neu laden
-          </button>
+          <span className="font-bold text-lg mb-2 flex items-center gap-2"><XCircle size={24}/> Karte blockiert</span>
+          <p className="text-sm mb-4">Fehler: {this.state.errorMsg}</p>
+          <button onClick={() => window.location.reload()} className="bg-red-100 hover:bg-red-200 px-6 py-3 rounded-xl text-red-800 font-bold transition-colors shadow-sm">App neu laden</button>
         </div>
       );
     }
@@ -93,29 +77,21 @@ const MapFitter = ({ bounds }) => {
   return null;
 };
 
-// ABSOLUT CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
+// CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
 function LocationPicker({ position, onSelect, icon }) {
   const map = useMap();
   
   useEffect(() => {
     if (!map) return;
-    
-    // Direkter Event-Listener auf das Leaflet-Karten-Objekt
     const onMapClick = (e) => {
-        if (e.latlng && typeof onSelect === 'function') {
-            onSelect(e.latlng);
-        }
+        if (typeof onSelect === 'function') onSelect(e.latlng);
     };
-
     map.on('click', onMapClick);
-
-    return () => {
-        map.off('click', onMapClick);
-    };
+    return () => { map.off('click', onMapClick); };
   }, [map, onSelect]);
 
   if (!position || typeof position.lat !== 'number' || isNaN(position.lat)) return null;
-  return <Marker position={position} {...(icon ? { icon } : {})} />;
+  return <Marker position={[position.lat, position.lng]} icon={icon || defaultIcon} />;
 }
 
 // --- KONFIGURATION ---
@@ -737,7 +713,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   
   const fileInputRef = useRef(null);
 
-  const update = (i,f,v) => { const n=[...qs]; n[i][f]=v; setQs(n); };
+  const update = (qIndex, f, v) => { const n=[...qs]; n[qIndex][f]=v; setQs(n); };
   
   const moveQUp = (index) => {
     if (index === 0) return;
@@ -894,21 +870,21 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         </div>
       </div>
       
-      {qs.map((q,i) => (
-        <div key={i} className="bg-white p-6 rounded-3xl border border-sky-100 shadow-md space-y-4">
+      {qs.map((q, qIndex) => (
+        <div key={qIndex} className="bg-white p-6 rounded-3xl border border-sky-100 shadow-md space-y-4">
           
           <div className="flex flex-col md:flex-row gap-4">
-            <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : q.type === 'step' ? "Kategorie / Hauptfrage (z.B. 'Wer bin ich?')..." : "Frage (oder leer für reine Buzzer-Runde)..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50 outline-none focus:border-sky-200 font-bold" value={q.q} onChange={e=>update(i,'q',e.target.value)}/>
+            <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : q.type === 'step' ? "Kategorie / Hauptfrage (z.B. 'Wer bin ich?')..." : "Frage (oder leer für reine Buzzer-Runde)..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50 outline-none focus:border-sky-200 font-bold" value={q.q} onChange={e=>update(qIndex,'q',e.target.value)}/>
             
             <div className="flex items-center gap-2">
                <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700 h-full outline-none focus:border-sky-200 font-bold" value={q.type} onChange={e=> {
                   const val = e.target.value;
                   const n = [...qs];
-                  n[i] = { ...n[i], type: val };
-                  if (val === 'step' && !n[i].steps) n[i].steps = [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}];
+                  n[qIndex] = { ...n[qIndex], type: val };
+                  if (val === 'step' && !n[qIndex].steps) n[qIndex].steps = [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}];
                   if (val === 'geo') {
-                      n[i].targetLat = n[i].targetLat ?? 51.165691;
-                      n[i].targetLng = n[i].targetLng ?? 10.451526;
+                      n[qIndex].targetLat = n[qIndex].targetLat ?? 51.165691;
+                      n[qIndex].targetLng = n[qIndex].targetLng ?? 10.451526;
                   }
                   setQs(n);
                }}>
@@ -922,39 +898,39 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                </select>
                
                <div className="flex gap-1 border-l border-sky-100 pl-2">
-                 <button onClick={() => moveQUp(i)} disabled={i===0} className={`p-2 rounded border transition-colors ${i===0 ? 'text-slate-200 bg-slate-50 border-slate-50' : 'text-slate-500 bg-white hover:bg-sky-50 border-sky-100'}`} title="Nach oben verschieben"><ArrowUp size={18}/></button>
-                 <button onClick={() => moveQDown(i)} disabled={i===qs.length-1} className={`p-2 rounded border transition-colors ${i===qs.length-1 ? 'text-slate-200 bg-slate-50 border-slate-50' : 'text-slate-500 bg-white hover:bg-sky-50 border-sky-100'}`} title="Nach unten verschieben"><ArrowDown size={18}/></button>
+                 <button onClick={() => moveQUp(qIndex)} disabled={qIndex===0} className={`p-2 rounded border transition-colors ${qIndex===0 ? 'text-slate-200 bg-slate-50 border-slate-50' : 'text-slate-500 bg-white hover:bg-sky-50 border-sky-100'}`} title="Nach oben verschieben"><ArrowUp size={18}/></button>
+                 <button onClick={() => moveQDown(qIndex)} disabled={qIndex===qs.length-1} className={`p-2 rounded border transition-colors ${qIndex===qs.length-1 ? 'text-slate-200 bg-slate-50 border-slate-50' : 'text-slate-500 bg-white hover:bg-sky-50 border-sky-100'}`} title="Nach unten verschieben"><ArrowDown size={18}/></button>
                </div>
 
                <div className="flex gap-1 border-l border-sky-100 pl-2">
-                 <button onClick={() => insertQAfter(i)} className="p-2 bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white rounded border border-emerald-100 transition-colors" title="Neue Frage danach einfügen"><Plus size={18}/></button>
-                 <button onClick={() => removeQ(i)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Frage löschen"><Trash2 size={18}/></button>
+                 <button onClick={() => insertQAfter(qIndex)} className="p-2 bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white rounded border border-emerald-100 transition-colors" title="Neue Frage danach einfügen"><Plus size={18}/></button>
+                 <button onClick={() => removeQ(qIndex)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Frage löschen"><Trash2 size={18}/></button>
                </div>
             </div>
           </div>
           
           {q.type !== 'break' && (
             <div className="flex gap-4 items-center flex-wrap">
-              <input placeholder="Bild / YouTube / MP3 URL (optional)" className="flex-1 min-w-[200px] bg-slate-50 p-2 rounded border border-sky-50 text-xs" value={q.imgUrl} onChange={e=>update(i,'imgUrl',e.target.value)}/>
-              <div className="flex items-center gap-2 text-xs text-slate-400"><label>Auf Handy?</label><input type="checkbox" checked={q.showImg} onChange={e=>update(i,'showImg',e.target.checked)}/></div>
+              <input placeholder="Bild / YouTube / MP3 URL (optional)" className="flex-1 min-w-[200px] bg-slate-50 p-2 rounded border border-sky-50 text-xs" value={q.imgUrl} onChange={e=>update(qIndex,'imgUrl',e.target.value)}/>
+              <div className="flex items-center gap-2 text-xs text-slate-400"><label>Auf Handy?</label><input type="checkbox" checked={q.showImg} onChange={e=>update(qIndex,'showImg',e.target.checked)}/></div>
               
               {allowJokers && (
                 <div className="flex items-center gap-2 text-xs text-amber-500 font-bold border-l border-amber-100 pl-4 ml-2 bg-amber-50 pr-2 py-1 rounded-md">
                     <label>🌟 Joker hier erlauben?</label>
-                    <input type="checkbox" checked={q.isJoker} onChange={e=>update(i,'isJoker',e.target.checked)}/>
+                    <input type="checkbox" checked={q.isJoker} onChange={e=>update(qIndex,'isJoker',e.target.checked)}/>
                 </div>
               )}
 
               {q.type !== 'text' && q.type !== 'buzzer' && q.type !== 'step' && q.type !== 'geo' && (
                   <div className="flex items-center gap-2 text-xs text-slate-400 border-l border-sky-100 pl-4 ml-2">
                       <label>Antworten auf Beamer zeigen?</label>
-                      <input type="checkbox" checked={q.showAnswers !== false} onChange={e=>update(i,'showAnswers',e.target.checked)}/>
+                      <input type="checkbox" checked={q.showAnswers !== false} onChange={e=>update(qIndex,'showAnswers',e.target.checked)}/>
                   </div>
               )}
 
               {q.type !== 'buzzer' && (
                 <div className="flex items-center gap-2 ml-auto">
-                  <Clock size={16} className="text-[#E69F00]"/><input type="number" min="0" className="w-16 bg-slate-50 p-2 rounded border border-sky-50" value={q.timer} onChange={e=>update(i,'timer',parseInt(e.target.value) || 0)}/>
+                  <Clock size={16} className="text-[#E69F00]"/><input type="number" min="0" className="w-16 bg-slate-50 p-2 rounded border border-sky-50" value={q.timer} onChange={e=>update(qIndex,'timer',parseInt(e.target.value) || 0)}/>
                 </div>
               )}
             </div>
@@ -969,12 +945,12 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                {(q.steps || []).map((step, sIdx) => (
                    <div key={sIdx} className="flex gap-3 items-center">
                        <span className="font-black text-sky-300 w-6 text-right">{sIdx + 1}.</span>
-                       <input placeholder={`Hinweis ${sIdx + 1}...`} className="flex-1 p-3 rounded-xl border border-sky-100 outline-none focus:border-sky-300 shadow-sm" value={step.text} onChange={e => { const nQs=[...qs]; nQs[i].steps[sIdx].text = e.target.value; setQs(nQs); }}/>
-                       <input type="number" className="w-24 p-3 rounded-xl border border-sky-100 outline-none focus:border-sky-300 shadow-sm text-center font-bold text-[#E69F00]" placeholder="Punkte" value={step.points} onChange={e => { const nQs=[...qs]; nQs[i].steps[sIdx].points = Number(e.target.value); setQs(nQs); }} title="Punkte für diesen Hinweis"/>
-                       <button onClick={() => { const nQs=[...qs]; nQs[i].steps.splice(sIdx, 1); setQs(nQs); }} className="text-red-400 p-3 hover:bg-red-50 rounded-xl transition-colors"><Trash2 size={20}/></button>
+                       <input placeholder={`Hinweis ${sIdx + 1}...`} className="flex-1 p-3 rounded-xl border border-sky-100 outline-none focus:border-sky-300 shadow-sm" value={step.text} onChange={e => { const nQs=[...qs]; nQs[qIndex].steps[sIdx].text = e.target.value; setQs(nQs); }}/>
+                       <input type="number" className="w-24 p-3 rounded-xl border border-sky-100 outline-none focus:border-sky-300 shadow-sm text-center font-bold text-[#E69F00]" placeholder="Punkte" value={step.points} onChange={e => { const nQs=[...qs]; nQs[qIndex].steps[sIdx].points = Number(e.target.value); setQs(nQs); }} title="Punkte für diesen Hinweis"/>
+                       <button onClick={() => { const nQs=[...qs]; nQs[qIndex].steps.splice(sIdx, 1); setQs(nQs); }} className="text-red-400 p-3 hover:bg-red-50 rounded-xl transition-colors"><Trash2 size={20}/></button>
                    </div>
                ))}
-               <button onClick={() => { const nQs=[...qs]; if(!nQs[i].steps) nQs[i].steps = []; nQs[i].steps.push({text:'', points: 1}); setQs(nQs); }} className="text-sm text-sky-600 font-bold hover:text-sky-800 transition-colors flex items-center gap-1 mt-2">
+               <button onClick={() => { const nQs=[...qs]; if(!nQs[qIndex].steps) nQs[qIndex].steps = []; nQs[qIndex].steps.push({text:'', points: 1}); setQs(nQs); }} className="text-sm text-sky-600 font-bold hover:text-sky-800 transition-colors flex items-center gap-1 mt-2">
                    <Plus size={16}/> Weiteren Hinweis hinzufügen
                </button>
             </div>
@@ -989,10 +965,10 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
                            <LocationPicker 
                                position={{lat: Number(q.targetLat) || 51.165, lng: Number(q.targetLng) || 10.451}} 
-                               icon={targetIcon || undefined} 
+                               icon={targetIcon || defaultIcon} 
                                onSelect={(p) => {
                                    const nQs=[...qs]; 
-                                   nQs[i] = { ...nQs[i], targetLat: p.lat, targetLng: p.lng }; 
+                                   nQs[qIndex] = { ...nQs[qIndex], targetLat: p.lat, targetLng: p.lng }; 
                                    setQs(nQs);
                                }} 
                            />
@@ -1004,15 +980,15 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
           )}
           
           {q.type==='multiple' && <div className="grid grid-cols-2 gap-2">{q.options.map((o,oi)=>(
-            <div key={oi} className={`flex gap-2 p-2 rounded border ${q.correctIndex == oi ? 'border-emerald-200 bg-emerald-50' : 'bg-slate-50 border-sky-50'}`}><input type="radio" checked={q.correctIndex==oi} onChange={()=>update(i,'correctIndex',oi)}/><input className="bg-transparent w-full text-slate-700" value={o} onChange={e=>{const no=[...q.options];no[oi]=e.target.value;update(i,'options',no)}}/></div>
+            <div key={oi} className={`flex gap-2 p-2 rounded border ${q.correctIndex == oi ? 'border-emerald-200 bg-emerald-50' : 'bg-slate-50 border-sky-50'}`}><input type="radio" checked={q.correctIndex==oi} onChange={()=>update(qIndex,'correctIndex',oi)}/><input className="bg-transparent w-full text-slate-700" value={o} onChange={e=>{const no=[...q.options];no[oi]=e.target.value;update(qIndex,'options',no)}}/></div>
           ))}</div>}
           
           {q.type !== 'multiple' && q.type !== 'break' && q.type !== 'geo' && (
-            <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.correctValue} onChange={e=>update(i,'correctValue',e.target.value)} placeholder={q.type === 'estimation' ? "Korrekte Zahl (oder leer lassen für Live-Eingabe nach dem Wiegen...)" : "Korrekte Lösung (für dich zur Info)..."} />
+            <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.correctValue} onChange={e=>update(qIndex,'correctValue',e.target.value)} placeholder={q.type === 'estimation' ? "Korrekte Zahl (oder leer lassen für Live-Eingabe nach dem Wiegen...)" : "Korrekte Lösung (für dich zur Info)..."} />
           )}
 
           {q.type !== 'break' && (
-            <textarea placeholder="Optional: Hintergrundinfo / Fun Fact zur Auflösung..." className="w-full bg-slate-50 p-3 rounded-xl border border-sky-50 text-slate-700 text-sm mt-4 resize-none h-20 outline-none focus:border-sky-200" value={q.note || ''} onChange={e=>update(i,'note',e.target.value)} />
+            <textarea placeholder="Optional: Hintergrundinfo / Fun Fact zur Auflösung..." className="w-full bg-slate-50 p-3 rounded-xl border border-sky-50 text-slate-700 text-sm mt-4 resize-none h-20 outline-none focus:border-sky-200" value={q.note || ''} onChange={e=>update(qIndex,'note',e.target.value)} />
           )}
         </div>
       ))}
@@ -1360,7 +1336,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
                        <MapFitter bounds={mapBounds} />
                        
-                       <Marker position={[safeTargetLat, safeTargetLng]} icon={targetIcon || undefined}>
+                       <Marker position={[safeTargetLat, safeTargetLng]} icon={targetIcon || defaultIcon}>
                            <Popup><b>Zielort</b></Popup>
                        </Marker>
                        
@@ -1371,7 +1347,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                            const dist = calculateDistance(safeTargetLat, safeTargetLng, pLat, pLng);
                            return (
                                <React.Fragment key={p.id}>
-                                   <Marker position={[pLat, pLng]}>
+                                   <Marker position={[pLat, pLng]} icon={defaultIcon}>
                                        <Popup>
                                            <b>{p.team || p.name}</b><br/>
                                            {dist.toFixed(1)} km
@@ -1738,9 +1714,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
       }
   }
 
-  const safeTargetLat = Number(q.targetLat) || 51.165691;
-  const safeTargetLng = Number(q.targetLng) || 10.451526;
-
   if (q.type === 'buzzer') {
     return (
       <div className="max-w-md mx-auto space-y-6 text-center text-slate-700">
@@ -1861,7 +1834,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
                      <MapErrorBoundary>
                       <MapContainer center={[51.165, 10.451]} zoom={5} style={{ height: '350px', width: '100%' }}>
                          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                         <LocationPicker position={v} onSelect={setV} />
+                         <LocationPicker position={v} onSelect={setV} icon={defaultIcon} />
                       </MapContainer>
                      </MapErrorBoundary>
                   </div>
@@ -1898,7 +1871,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
                      <div className="mt-6">
                          <span className="text-xs uppercase font-bold tracking-widest opacity-70 block mb-2 text-slate-500">Dein Ergebnis:</span>
                          <span className="text-2xl font-black bg-white px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-slate-800">
-                             {calculateDistance(safeTargetLat, safeTargetLng, Number(player.currentAnswer.lat), Number(player.currentAnswer.lng)).toFixed(1)} km entfernt
+                             {calculateDistance(Number(q.targetLat) || 51.165, Number(q.targetLng) || 10.451, Number(player.currentAnswer.lat), Number(player.currentAnswer.lng)).toFixed(1)} km entfernt
                          </span>
                      </div>
                  )}
