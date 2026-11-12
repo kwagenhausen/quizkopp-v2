@@ -93,26 +93,26 @@ const MapFitter = ({ bounds }) => {
   return null;
 };
 
-// CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
+// ABSOLUT CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
 function LocationPicker({ position, onSelect, icon }) {
   const map = useMap();
   
   useEffect(() => {
-    // Event Handler außerhalb des JSX-Render-Cycles
-    const handleMapClick = (e) => {
-        if (typeof onSelect === 'function') {
+    if (!map) return;
+    
+    // Direkter Event-Listener auf das Leaflet-Karten-Objekt
+    const onMapClick = (e) => {
+        if (e.latlng && typeof onSelect === 'function') {
             onSelect(e.latlng);
         }
     };
 
-    // Das Event an die Karte binden
-    map.on('click', handleMapClick);
+    map.on('click', onMapClick);
 
-    // Aufräumen, wenn die Komponente verschwindet
     return () => {
-        map.off('click', handleMapClick);
+        map.off('click', onMapClick);
     };
-  }, [map, onSelect]); // Abhängigkeiten für React
+  }, [map, onSelect]);
 
   if (!position || typeof position.lat !== 'number' || isNaN(position.lat)) return null;
   return <Marker position={position} {...(icon ? { icon } : {})} />;
