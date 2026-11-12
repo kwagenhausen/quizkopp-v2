@@ -4,6 +4,56 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
 
+// --- NEU: KARTEN IMPORTE ---
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents, Polyline, useMap } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+// Fix für die Standard-Leaflet-Icons (damit die Pins richtig laden)
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+});
+
+// Unser grüner Ziel-Pin
+const targetIcon = new L.Icon({
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41]
+});
+
+// Luftlinien-Berechnung (Haversine)
+const calculateDistance = (lat1, lon1, lat2, lon2) => {
+  const R = 6371; // Erdradius in km
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon/2) * Math.sin(dLon/2); 
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+  return R * c; 
+};
+
+// Hilfs-Komponente für das automatische Zoomen auf alle Pins
+const MapFitter = ({ bounds }) => {
+  const map = useMap();
+  useEffect(() => { 
+      if (bounds && bounds.length > 0) {
+          setTimeout(() => map.fitBounds(bounds, { padding: [50, 50] }), 100);
+      } 
+  }, [bounds, map]);
+  return null;
+};
+
+// Hilfs-Komponente für den Klick auf die Karte
+function LocationPicker({ position, onSelect, icon }) {
+  useMapEvents({ click(e) { if(onSelect) onSelect(e.latlng); } });
+  return position && position.lat ? <Marker position={position} icon={icon || new L.Icon.Default()} /> : null;
+}
+
 // --- KONFIGURATION ---
 const ADMIN_PASSWORD = "quiz"; // DEIN PASSWORT
 
@@ -55,7 +105,6 @@ const Confetti = () => {
   );
 };
 
-// --- HELFER: MULTIMEDIA ---
 const getMediaType = (url) => {
   if (!url) return 'none';
   const lowerUrl = url.toLowerCase();
@@ -80,7 +129,6 @@ const getYouTubeEmbedUrl = (url) => {
   }
 };
 
-// --- HELFER: TEAM BERECHNUNG ---
 const getSortedTeams = (players, room) => {
   if (!room || !players) return [];
   const teamsMap = {};
@@ -88,25 +136,16 @@ const getSortedTeams = (players, room) => {
   players.forEach(p => {
       const tId = p.team && p.team.trim() !== "" ? p.team.trim() : p.name;
       if (!teamsMap[tId]) {
-          teamsMap[tId] = { 
-              name: tId, 
-              players: [], 
-              playerScoreSum: 0, 
-              estimationScore: room.teamScores?.[tId] || 0 
-          };
+          teamsMap[tId] = { name: tId, players: [], playerScoreSum: 0, estimationScore: room.teamScores?.[tId] || 0 };
       }
       teamsMap[tId].players.push(p);
       teamsMap[tId].playerScoreSum += p.score;
   });
 
-  Object.values(teamsMap).forEach(t => {
-      t.totalScore = t.playerScoreSum + t.estimationScore;
-  });
-
+  Object.values(teamsMap).forEach(t => { t.totalScore = t.playerScoreSum + t.estimationScore; });
   return Object.values(teamsMap).sort((a,b) => b.totalScore - a.totalScore);
 };
 
-// --- HELFER: WEITERE ---
 const generateRoomCode = () => {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let res = '';
@@ -133,6 +172,7 @@ const downloadCSV = (players, room) => {
       if (q.type === 'break') row.push("---");
       else if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
       else if (q.type === 'buzzer') row.push(a ? "Gebuzzert & Richtig" : "---");
+      else if (q.type === 'geo' && a?.lat) row.push(`${a.lat.toFixed(4)} / ${a.lng.toFixed(4)}`);
       else row.push(a?.toString().replace(/,/g, "") || "---");
     });
     return row;
@@ -159,7 +199,9 @@ const getBaseQuestionTemplate = () => ({
     showAnswers: true, 
     isJoker: false, 
     note: '',
-    steps: [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}] // Default Steps
+    steps: [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}],
+    targetLat: 51.165691, // Standard: Mitte Deutschland
+    targetLng: 10.451526
 });
 
 // --- HAUPT-APP ---
@@ -359,7 +401,11 @@ export default function App() {
       } else {
          for (const p of players) batch.update(doc(db, 'players', p.id), { wasCorrect: false });
       }
+    } else if (q.type === 'geo') {
+      // Geo wird manuell vom Host bewertet, wir setzen nur den Status zurück
+      for (const p of players) batch.update(doc(db, 'players', p.id), { wasCorrect: false });
     }
+    
     batch.update(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
     await batch.commit();
   };
@@ -716,20 +762,15 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         const type = cols[0].toLowerCase();
         if (!['multiple', 'text', 'estimation', 'buzzer', 'break'].includes(type)) continue;
 
-        const parsedQ = {
-          type: type,
-          q: cols[1] || "",
-          options: [cols[2] || "", cols[3] || "", cols[4] || "", cols[5] || ""],
-          correctIndex: parseInt(cols[6]) - 1 || 0,
-          correctValue: cols[6] || "",
-          timer: parseInt(cols[7]) || 0,
-          imgUrl: cols[8] || "",
-          showImg: true,
-          showAnswers: true,
-          isJoker: false,
-          note: cols[9] || "",
-          steps: [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}]
-        };
+        const parsedQ = getBaseQuestionTemplate();
+        parsedQ.type = type;
+        parsedQ.q = cols[1] || "";
+        parsedQ.options = [cols[2] || "", cols[3] || "", cols[4] || "", cols[5] || ""];
+        parsedQ.correctIndex = parseInt(cols[6]) - 1 || 0;
+        parsedQ.correctValue = cols[6] || "";
+        parsedQ.timer = parseInt(cols[7]) || 0;
+        parsedQ.imgUrl = cols[8] || "";
+        parsedQ.note = cols[9] || "";
 
         newQuestions.push(parsedQ);
       }
@@ -811,6 +852,8 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                  <option value="estimation">Schätzung</option>
                  <option value="buzzer">Buzzer-Frage</option>
                  <option value="step">Stufen-Rätsel (Hinweise)</option>
+                 {/* NEU: GEO-QUIZ TYPE */}
+                 <option value="geo">Geo-Quiz (Karte)</option>
                  <option value="break">⏸️ Pause / Zwischenstand</option>
                </select>
                
@@ -838,7 +881,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                 </div>
               )}
 
-              {q.type !== 'text' && q.type !== 'buzzer' && q.type !== 'step' && (
+              {q.type !== 'text' && q.type !== 'buzzer' && q.type !== 'step' && q.type !== 'geo' && (
                   <div className="flex items-center gap-2 text-xs text-slate-400 border-l border-sky-100 pl-4 ml-2">
                       <label>Antworten auf Beamer zeigen?</label>
                       <input type="checkbox" checked={q.showAnswers !== false} onChange={e=>update(i,'showAnswers',e.target.checked)}/>
@@ -853,7 +896,6 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
             </div>
           )}
 
-          {/* NEU: HINWEISE FÜR STUFEN-RÄTSEL */}
           {q.type === 'step' && (
             <div className="space-y-3 mt-4 bg-sky-50/50 p-6 rounded-2xl border border-sky-100 shadow-inner">
                <div className="flex justify-between items-center mb-2">
@@ -874,11 +916,27 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
             </div>
           )}
           
+          {/* NEU: ZIELORT-AUSWAHL FÜR GEO-QUIZ */}
+          {q.type === 'geo' && (
+             <div className="w-full mt-4 bg-sky-50/50 p-4 rounded-2xl border border-sky-100 shadow-inner">
+                <p className="text-sm font-bold text-sky-700 uppercase tracking-widest mb-2">📍 Ziel-Koordinate auf der Karte setzen</p>
+                <div className="h-[300px] w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative">
+                    <MapContainer center={[q.targetLat || 51.165, q.targetLng || 10.451]} zoom={5} style={{ height: '100%', width: '100%' }}>
+                       <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                       <LocationPicker position={{lat: q.targetLat || 51.165, lng: q.targetLng || 10.451}} onSelect={(p) => {
+                           const nQs=[...qs]; nQs[i].targetLat = p.lat; nQs[i].targetLng = p.lng; setQs(nQs);
+                       }} />
+                    </MapContainer>
+                </div>
+                <p className="text-xs text-slate-400 mt-2">Klicke auf die Karte, um den grünen Lösungs-Pin zu verschieben.</p>
+             </div>
+          )}
+          
           {q.type==='multiple' && <div className="grid grid-cols-2 gap-2">{q.options.map((o,oi)=>(
             <div key={oi} className={`flex gap-2 p-2 rounded border ${q.correctIndex == oi ? 'border-emerald-200 bg-emerald-50' : 'bg-slate-50 border-sky-50'}`}><input type="radio" checked={q.correctIndex==oi} onChange={()=>update(i,'correctIndex',oi)}/><input className="bg-transparent w-full text-slate-700" value={o} onChange={e=>{const no=[...q.options];no[oi]=e.target.value;update(i,'options',no)}}/></div>
           ))}</div>}
           
-          {q.type !== 'multiple' && q.type !== 'break' && (
+          {q.type !== 'multiple' && q.type !== 'break' && q.type !== 'geo' && (
             <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.correctValue} onChange={e=>update(i,'correctValue',e.target.value)} placeholder={q.type === 'estimation' ? "Korrekte Zahl (oder leer lassen für Live-Eingabe nach dem Wiegen...)" : "Korrekte Lösung (für dich zur Info)..."} />
           )}
 
@@ -921,7 +979,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     if (!showSimulator) {
         await setDoc(doc(db, 'players', demoId), {
             name: '📱 Demo Tester', team: 'Test Team', roomCode: room.id, 
-            score: 0, currentAnswer: null, answers: {}, jokerUsed: false, jokerQuestion: null, stepLockedIn: null
+            score: 0, currentAnswer: null, answers: {}, jokerUsed: false, jokerQuestion: null
         });
         setShowSimulator(true);
     } else {
@@ -1183,7 +1241,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
             <h2 className="text-4xl md:text-5xl lg:text-6xl font-bold mb-10 leading-tight">{q.q || (q.type === 'buzzer' ? 'Schnelles Spiel: Buzzer aktiv!' : '')}</h2>
 
-            {/* NEU: DARSTELLUNG DER STUFEN / HINWEISE FÜR BEAMER UND HOST */}
             {q.type === 'step' && room.status === 'active' && (
               <div className="mt-4 space-y-4 mb-8">
                 {q.steps && q.steps.slice(0, (room.currentStepIndex || 0) + 1).map((s, idx) => (
@@ -1194,7 +1251,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                     </div>
                 ))}
 
-                {/* NUR HOST: BUTTON FÜR NÄCHSTEN HINWEIS */}
                 {!isBeamer && q.steps && (room.currentStepIndex || 0) < q.steps.length - 1 && (
                     <button onClick={async () => {
                         await updateDoc(doc(db, 'rooms', room.id), { currentStepIndex: (room.currentStepIndex || 0) + 1 });
@@ -1217,6 +1273,46 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                   onChange={e => setLiveEstValue(e.target.value)}
                 />
               </div>
+            )}
+            
+            {/* NEU: GEO QUIZ REVEAL - DIE GROSSE KARTE FÜR BEAMER UND HOST */}
+            {q.type === 'geo' && room.status === 'revealed' && (
+               <div className="h-[500px] w-full rounded-3xl overflow-hidden border border-sky-200 z-0 relative mb-8 shadow-inner">
+                   <MapContainer center={[q.targetLat, q.targetLng]} zoom={5} style={{ height: '100%', width: '100%' }}>
+                       <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                       <MapFitter bounds={
+                           [
+                               [q.targetLat, q.targetLng],
+                               ...players.filter(p => p.currentAnswer?.lat).map(p => [p.currentAnswer.lat, p.currentAnswer.lng])
+                           ]
+                       } />
+                       {/* Das Ziel */}
+                       <Marker position={[q.targetLat, q.targetLng]} icon={targetIcon}>
+                           <Popup><b>Zielort</b></Popup>
+                       </Marker>
+                       {/* Die Tipps der Spieler */}
+                       {players.map(p => {
+                           if (!p.currentAnswer?.lat) return null;
+                           const dist = calculateDistance(q.targetLat, q.targetLng, p.currentAnswer.lat, p.currentAnswer.lng);
+                           return (
+                               <React.Fragment key={p.id}>
+                                   <Marker position={[p.currentAnswer.lat, p.currentAnswer.lng]}>
+                                       <Popup>
+                                           <b>{p.team || p.name}</b><br/>
+                                           {dist.toFixed(1)} km
+                                       </Popup>
+                                   </Marker>
+                                   <Polyline 
+                                       positions={[[q.targetLat, q.targetLng], [p.currentAnswer.lat, p.currentAnswer.lng]]} 
+                                       color="#E69F00" 
+                                       weight={3} 
+                                       dashArray="5, 10" 
+                                   />
+                               </React.Fragment>
+                           )
+                       })}
+                   </MapContainer>
+               </div>
             )}
 
             {q.type === 'buzzer' && room.status === 'active' && room.buzzerWinner && (
@@ -1260,7 +1356,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               </div>
             )}
 
-            {room.status === 'revealed' && q.type !== 'buzzer' && (
+            {room.status === 'revealed' && q.type !== 'buzzer' && q.type !== 'geo' && (
               <div className="bg-emerald-50 border border-emerald-500/50 p-8 rounded-2xl mb-6 mt-auto">
                 <p className="text-emerald-500 font-bold uppercase tracking-widest mb-2">Korrekte Lösung</p>
                 <p className="text-4xl font-bold">
@@ -1289,17 +1385,19 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
             {room.status === 'revealed' && q.type === 'estimation' && q.showAnswers !== false && renderEstimationAnswers()}
             
-            {/* TEXT UND NEU: STUFEN-RÄTSEL AUSWERTUNG */}
-            {room.status === 'revealed' && (q.type === 'text' || q.type === 'step') && <div className="space-y-4 mt-8 border-t border-sky-100 pt-8">
+            {/* TEXT, STEP UND NEU: GEO QUIZ AUSWERTUNG */}
+            {room.status === 'revealed' && (q.type === 'text' || q.type === 'step' || q.type === 'geo') && <div className="space-y-4 mt-8 border-t border-sky-100 pt-8">
               <h3 className="text-xl font-bold text-slate-600 mb-4">Antworten bewerten</h3>
               {players.map(p => {
                 const pUsedJoker = p.jokerQuestion === room.currentQuestionIndex;
                 const mult = pUsedJoker ? 2 : 1;
                 
-                // Für Stufen-Rätsel: Wieviele Punkte war der Hinweis wert?
                 const hasStepData = q.type === 'step' && p.stepLockedIn !== undefined && p.stepLockedIn !== null;
                 const stepInfo = hasStepData ? q.steps[p.stepLockedIn] : null;
                 const basePts = stepInfo ? stepInfo.points : 1;
+                
+                const isGeo = q.type === 'geo';
+                const dist = isGeo && p.currentAnswer?.lat ? calculateDistance(q.targetLat, q.targetLng, p.currentAnswer.lat, p.currentAnswer.lng) : null;
                 
                 return (
                   <div key={p.id} className="flex flex-col sm:flex-row gap-4 justify-between sm:items-center bg-slate-50 p-6 rounded-2xl border border-sky-50 shadow-sm">
@@ -1308,7 +1406,14 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                            {p.name} {p.team && <span className="text-xs text-slate-400">({p.team})</span>}
                            {pUsedJoker && <span className="text-amber-500 text-lg" title="Joker eingesetzt!">🌟</span>}
                         </span>
-                        <p className="text-2xl italic mt-1 text-slate-700 font-medium">"{p.currentAnswer||'---'}"</p>
+                        
+                        {isGeo ? (
+                            <p className="text-2xl font-black mt-1 text-slate-700">
+                               {dist !== null ? `${dist.toFixed(1)} km entfernt` : 'Kein Pin gesetzt'}
+                            </p>
+                        ) : (
+                            <p className="text-2xl italic mt-1 text-slate-700 font-medium">"{p.currentAnswer||'---'}"</p>
+                        )}
                         
                         {hasStepData && (
                             <span className="text-xs font-bold text-sky-700 bg-sky-100 px-3 py-1 rounded-md border border-sky-200 mt-2 inline-block">
@@ -1317,17 +1422,25 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                         )}
                     </div>
                     {!isBeamer ? (
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 flex-wrap">
                             <button onClick={()=>onCorrect(p.id, 0)} className={`p-4 rounded-xl shadow-sm transition-all ${p.corrected && p.currentAwardedPoints === 0 ? 'bg-red-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-red-500'}`} title="0 Punkte"><XCircle size={32}/></button>
                             
                             {q.type === 'text' && (
                                 <button onClick={()=>onCorrect(p.id, 0.5)} className={`p-4 rounded-xl shadow-sm transition-all font-black text-2xl w-[64px] flex justify-center items-center ${p.corrected && p.currentAwardedPoints === 0.5 * mult ? 'bg-orange-400 text-white scale-105' : 'bg-white text-slate-300 hover:text-orange-400'}`} title={mult === 2 ? "0.5 Punkte (x2 Joker = 1 Punkt)" : "0.5 Punkte"}>½</button>
                             )}
-                            
-                            <button onClick={()=>onCorrect(p.id, basePts)} className={`p-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-1 ${p.corrected && p.currentAwardedPoints === basePts * mult ? 'bg-emerald-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-emerald-500'}`} title={mult === 2 ? `${basePts} Punkte (x2 Joker = ${basePts * 2} Punkte)` : `${basePts} Punkt(e)`}>
-                                <CheckCircle size={32}/> 
-                                {q.type === 'step' && <span className="text-lg font-black">{basePts * mult}</span>}
-                            </button>
+
+                            {isGeo ? (
+                                <>
+                                  <button onClick={()=>onCorrect(p.id, 1)} className={`p-4 rounded-xl shadow-sm transition-all font-black text-2xl w-[64px] flex justify-center items-center ${p.corrected && p.currentAwardedPoints === 1 * mult ? 'bg-emerald-400 text-white scale-105' : 'bg-white text-slate-300 hover:text-emerald-400'}`} title={mult === 2 ? "1 Punkt (x2 Joker = 2 Punkte)" : "1 Punkt"}>1</button>
+                                  <button onClick={()=>onCorrect(p.id, 2)} className={`p-4 rounded-xl shadow-sm transition-all font-black text-2xl w-[64px] flex justify-center items-center ${p.corrected && p.currentAwardedPoints === 2 * mult ? 'bg-emerald-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-emerald-500'}`} title={mult === 2 ? "2 Punkte (x2 Joker = 4 Punkte)" : "2 Punkte"}>2</button>
+                                  <button onClick={()=>onCorrect(p.id, 3)} className={`p-4 rounded-xl shadow-sm transition-all font-black text-2xl w-[64px] flex justify-center items-center ${p.corrected && p.currentAwardedPoints === 3 * mult ? 'bg-emerald-600 text-white scale-105' : 'bg-white text-slate-300 hover:text-emerald-600'}`} title={mult === 2 ? "3 Punkte (x2 Joker = 6 Punkte)" : "3 Punkte"}>3</button>
+                                </>
+                            ) : (
+                                <button onClick={()=>onCorrect(p.id, basePts)} className={`p-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-1 ${p.corrected && p.currentAwardedPoints === basePts * mult ? 'bg-emerald-500 text-white scale-105' : 'bg-white text-slate-300 hover:text-emerald-500'}`} title={mult === 2 ? `${basePts} Punkte (x2 Joker = ${basePts * 2} Punkte)` : `${basePts} Punkt(e)`}>
+                                    <CheckCircle size={32}/> 
+                                    {q.type === 'step' && <span className="text-lg font-black">{basePts * mult}</span>}
+                                </button>
+                            )}
                         </div>
                     ) : (
                         <div className="flex items-center justify-center font-black text-2xl">
@@ -1417,14 +1530,15 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
   if (!player) return null;
   const q = room.questions[room.currentQuestionIndex];
   
-  const [v, setV] = useState('');
+  // v speichert jetzt bei Geo-Quiz ein Objekt {lat, lng} anstatt Text
+  const [v, setV] = useState(q.type === 'geo' ? null : '');
   const [qStartTime, setQStartTime] = useState(Date.now());
   const sortedTeams = getSortedTeams(players, room);
   
   useEffect(() => {
-    setV('');
+    setV(q.type === 'geo' ? null : '');
     setQStartTime(Date.now()); 
-  }, [room.currentQuestionIndex]);
+  }, [room.currentQuestionIndex, q.type]);
   
   const hasAnswered = player.currentAnswer !== null && player.currentAnswer !== undefined && player.currentAnswer !== "";
   const timeIsUp = q.timer > 0 && room.timeLeft === 0 && room.status === 'active';
@@ -1543,7 +1657,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
   if (player.wasCorrect) {
       if (q.type === 'estimation' && player.isBullseye) {
           successText = isJokerActiveNow ? '🎯🌟 VOLLTREFFER! 4 Punkte für euch!' : '🎯 VOLLTREFFER! 2 Punkte für euch!';
-      } else if ((q.type === 'text' || q.type === 'step') && player.currentAwardedPoints !== undefined) {
+      } else if ((q.type === 'text' || q.type === 'step' || q.type === 'geo') && player.currentAwardedPoints !== undefined) {
           successText = isJokerActiveNow ? `🌟 ${player.currentAwardedPoints} Punkte für euch!` : `${player.currentAwardedPoints} Punkt${player.currentAwardedPoints !== 1 ? 'e' : ''} für euch!`;
       } else {
           successText = isJokerActiveNow ? '🌟 2 Punkte für euch!' : 'Punkt für euch!';
@@ -1638,7 +1752,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
          </div>
       )}
 
-      {/* NEU: HINWEIS-ANZEIGE FÜR STUFEN-RÄTSEL AUF DEM HANDY */}
       {q.type === 'step' && room.status === 'active' && (
         <div className="space-y-3 mb-6">
             <h3 className="font-bold text-slate-500 uppercase tracking-widest text-xs">Aktuelle Hinweise:</h3>
@@ -1655,11 +1768,27 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
       {room.status === 'active' && !hasAnswered && !timeIsUp && (
         <div className="space-y-3 pt-2">
           {q.type === 'multiple' && q.options.map((o,i)=><button key={i} onClick={()=>onAnswer(i)} className="w-full bg-white p-5 rounded-2xl text-left border border-sky-100 shadow-sm font-medium active:bg-sky-50 active:scale-[0.98] transition-all">{o}</button>)}
+          
           {(q.type === 'text' || q.type === 'estimation' || q.type === 'step') && (
               <div className="space-y-4">
                   <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-5 rounded-2xl border border-sky-100 outline-none focus:border-[#E69F00]" value={v} onChange={e=>setV(e.target.value)} placeholder="Antwort..."/>
                   <button onClick={()=>onAnswer(v)} disabled={!v} className="w-full bg-[#E69F00] text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">
                       Abschicken
+                  </button>
+              </div>
+          )}
+          
+          {/* NEU: GEO-QUIZ SPIELER KARTE */}
+          {q.type === 'geo' && (
+              <div className="space-y-4">
+                  <div className="h-[350px] w-full rounded-2xl overflow-hidden border border-sky-200 z-0 relative shadow-sm">
+                      <MapContainer center={[51.165, 10.451]} zoom={5} style={{ height: '100%', width: '100%' }}>
+                         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                         <LocationPicker position={v} onSelect={setV} />
+                      </MapContainer>
+                  </div>
+                  <button onClick={()=>onAnswer(v)} disabled={!v || !v.lat} className="w-full bg-[#E69F00] text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">
+                      Pin einloggen
                   </button>
               </div>
           )}
@@ -1675,25 +1804,36 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
       
       {hasAnswered && room.status === 'active' && <div className="text-center py-12 bg-white rounded-3xl border border-sky-100 shadow-inner text-[#E69F00] font-bold text-lg flex flex-col items-center gap-2"><CheckCircle size={32}/> Antwort eingeloggt!</div>}
       
-      {/* NEU: WARTEN-ANZEIGE AUCH FÜR STEP ANGEPASST */}
-      {room.status === 'revealed' && (q.type === 'text' || q.type === 'step') && !player.corrected && (
+      {room.status === 'revealed' && (q.type === 'text' || q.type === 'step' || q.type === 'geo') && !player.corrected && (
           <div className="py-12 rounded-3xl border-2 text-center bg-slate-50 border-sky-100 text-slate-400 shadow-inner animate-pulse">
              <h3 className="text-xl font-bold">Quizmaster wertet aus...</h3>
              <p className="text-sm mt-2">Warte auf die Entscheidung.</p>
           </div>
       )}
       
-      {room.status === 'revealed' && ((q.type !== 'text' && q.type !== 'step') || player.corrected) && typeof player.wasCorrect === 'boolean' && (
+      {room.status === 'revealed' && ((q.type !== 'text' && q.type !== 'step' && q.type !== 'geo') || player.corrected) && typeof player.wasCorrect === 'boolean' && (
          <div className="mt-8 space-y-4">
              <div className={`py-10 rounded-3xl border-2 text-center ${player.wasCorrect?'bg-emerald-50 border-emerald-500 text-emerald-500':'bg-red-50 border-red-500 text-red-500'}`}>
                  <h3 className="text-2xl font-bold">{player.wasCorrect ? successText : 'Leider kein Punkt.'}</h3>
                  
-                 <div className="mt-6">
-                     <span className="text-xs uppercase font-bold tracking-widest opacity-70 block mb-2 text-slate-500">Richtige Lösung:</span>
-                     <span className="text-2xl font-black bg-white px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-slate-800">
-                         {q.type === 'multiple' ? q.options[q.correctIndex] : q.correctValue}
-                     </span>
-                 </div>
+                 {/* BEIM GEO QUIZ ZEIGEN WIR DEM SPIELER SEINE EIGENE ABWEICHUNG AN */}
+                 {q.type === 'geo' && player.currentAnswer?.lat && (
+                     <div className="mt-6">
+                         <span className="text-xs uppercase font-bold tracking-widest opacity-70 block mb-2 text-slate-500">Dein Ergebnis:</span>
+                         <span className="text-2xl font-black bg-white px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-slate-800">
+                             {calculateDistance(q.targetLat, q.targetLng, player.currentAnswer.lat, player.currentAnswer.lng).toFixed(1)} km entfernt
+                         </span>
+                     </div>
+                 )}
+
+                 {q.type !== 'geo' && q.correctValue && (
+                     <div className="mt-6">
+                         <span className="text-xs uppercase font-bold tracking-widest opacity-70 block mb-2 text-slate-500">Richtige Lösung:</span>
+                         <span className="text-2xl font-black bg-white px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-slate-800">
+                             {q.type === 'multiple' ? q.options[q.correctIndex] : q.correctValue}
+                         </span>
+                     </div>
+                 )}
              </div>
 
              {q.note && (
@@ -1708,7 +1848,6 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
   );
 }
 
-// --- ZUSCHAUER DASHBOARD COMPONENT ---
 function ObserverDashboard({ room, players }) {
   const q = room.questions[room.currentQuestionIndex];
   const sortedTeams = getSortedTeams(players, room);
@@ -1785,7 +1924,6 @@ function ObserverDashboard({ room, players }) {
          </div>
       )}
 
-      {/* NEU: HINWEIS-ANZEIGE FÜR STUFEN-RÄTSEL AUCH FÜR ZUSCHAUER */}
       {q.type === 'step' && room.status === 'active' && (
         <div className="space-y-3 mb-6">
             <h3 className="font-bold text-slate-500 uppercase tracking-widest text-xs">Aktuelle Hinweise:</h3>
