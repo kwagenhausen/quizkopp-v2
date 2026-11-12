@@ -5,27 +5,35 @@ import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
 
 // --- KARTEN IMPORTE ---
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents, Polyline, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-// Fix für die Standard-Leaflet-Icons
-delete L.Icon.Default.prototype._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-});
+// Fix für die Standard-Leaflet-Icons (Crash-sicher)
+if (typeof window !== 'undefined') {
+    try {
+        delete L.Icon.Default.prototype._getIconUrl;
+        L.Icon.Default.mergeOptions({
+          iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+          iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+          shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+        });
+    } catch (e) { console.error("Leaflet Icon Error:", e); }
+}
 
 // Unser grüner Ziel-Pin
-const targetIcon = new L.Icon({
-  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-  shadowSize: [41, 41]
-});
+const getTargetIcon = () => {
+    if (typeof window === 'undefined') return null;
+    return new L.Icon({
+      iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
+      shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+      iconSize: [25, 41],
+      iconAnchor: [12, 41],
+      popupAnchor: [1, -34],
+      shadowSize: [41, 41]
+    });
+};
+const targetIcon = getTargetIcon();
 
 // Luftlinien-Berechnung (Haversine)
 const calculateDistance = (lat1, lon1, lat2, lon2) => {
@@ -43,19 +51,31 @@ const MapFitter = ({ bounds }) => {
   useEffect(() => { 
       if (bounds && bounds.length > 0) {
           try {
-              setTimeout(() => map.fitBounds(bounds, { padding: [50, 50] }), 100);
-          } catch(e) {} // Fallback falls bounds ungültig sind
+              setTimeout(() => {
+                  if (map && map.fitBounds) map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+              }, 200);
+          } catch(e) { console.error(e); } 
       } 
   }, [bounds, map]);
   return null;
 };
 
-// Hilfs-Komponente für den Klick auf die Karte (Crash-sicherer Marker!)
+// CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
 function LocationPicker({ position, onSelect, icon }) {
-  useMapEvents({ click(e) { if(onSelect) onSelect(e.latlng); } });
-  return position && position.lat && !isNaN(position.lat) ? (
-      <Marker position={position} {...(icon ? { icon } : {})} />
-  ) : null;
+  const map = useMap();
+  
+  useEffect(() => {
+    const handleClick = (e) => {
+        if (onSelect) onSelect(e.latlng);
+    };
+    map.on('click', handleClick);
+    return () => {
+        map.off('click', handleClick);
+    };
+  }, [map, onSelect]);
+
+  if (!position || typeof position.lat !== 'number' || isNaN(position.lat)) return null;
+  return <Marker position={position} {...(icon ? { icon } : {})} />;
 }
 
 // --- KONFIGURATION ---
@@ -204,7 +224,7 @@ const getBaseQuestionTemplate = () => ({
     isJoker: false, 
     note: '',
     steps: [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}],
-    targetLat: 51.165691, // Standard: Mitte Deutschland
+    targetLat: 51.165691, 
     targetLng: 10.451526
 });
 
@@ -844,8 +864,13 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700 h-full outline-none focus:border-sky-200 font-bold" value={q.type} onChange={e=> {
                   const val = e.target.value;
                   const n = [...qs];
-                  n[i].type = val;
+                  // Sicheres Kopieren des Objekts, verhindert React State Mutations Fehler!
+                  n[i] = { ...n[i], type: val };
                   if (val === 'step' && !n[i].steps) n[i].steps = [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}];
+                  if (val === 'geo') {
+                      n[i].targetLat = n[i].targetLat ?? 51.165691;
+                      n[i].targetLng = n[i].targetLng ?? 10.451526;
+                  }
                   setQs(n);
                }}>
                  <option value="multiple">Multiple Choice</option>
@@ -919,14 +944,17 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
           {q.type === 'geo' && (
              <div className="w-full mt-4 bg-sky-50/50 p-4 rounded-2xl border border-sky-100 shadow-inner">
                 <p className="text-sm font-bold text-sky-700 uppercase tracking-widest mb-2">📍 Ziel-Koordinate auf der Karte setzen</p>
-                <div className="h-[300px] w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative">
-                    <MapContainer center={[q.targetLat ?? 51.165, q.targetLng ?? 10.451]} zoom={5} style={{ height: '100%', width: '100%' }}>
+                <div className="w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative">
+                    {/* CRASH FIX: Feste CSS Höhe zwingt den Container auf, ansonsten crasht Leaflet sofort */}
+                    <MapContainer key={`setup-map-${i}`} center={[q.targetLat ?? 51.165, q.targetLng ?? 10.451]} zoom={5} style={{ height: '300px', width: '100%' }}>
                        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
                        <LocationPicker 
                            position={{lat: q.targetLat ?? 51.165, lng: q.targetLng ?? 10.451}} 
-                           icon={targetIcon} 
+                           icon={targetIcon || undefined} 
                            onSelect={(p) => {
-                               const nQs=[...qs]; nQs[i].targetLat = p.lat; nQs[i].targetLng = p.lng; setQs(nQs);
+                               const nQs=[...qs]; 
+                               nQs[i] = { ...nQs[i], targetLat: p.lat, targetLng: p.lng }; 
+                               setQs(nQs);
                            }} 
                        />
                     </MapContainer>
@@ -1208,7 +1236,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     );
   }
 
-  // Sichere Geo-Fallbacks für die Auswertung
   const safeTargetLat = q.targetLat ?? 51.165691;
   const safeTargetLng = q.targetLng ?? 10.451526;
   const mapBounds = [
@@ -1287,12 +1314,12 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             )}
             
             {q.type === 'geo' && room.status === 'revealed' && (
-               <div className="h-[500px] w-full rounded-3xl overflow-hidden border border-sky-200 z-0 relative mb-8 shadow-inner">
-                   <MapContainer center={[safeTargetLat, safeTargetLng]} zoom={5} style={{ height: '100%', width: '100%' }}>
+               <div className="w-full rounded-3xl overflow-hidden border border-sky-200 z-0 relative mb-8 shadow-inner">
+                   <MapContainer center={[safeTargetLat, safeTargetLng]} zoom={5} style={{ height: '500px', width: '100%' }}>
                        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
                        <MapFitter bounds={mapBounds} />
                        
-                       <Marker position={[safeTargetLat, safeTargetLng]} icon={targetIcon}>
+                       <Marker position={[safeTargetLat, safeTargetLng]} icon={targetIcon || undefined}>
                            <Popup><b>Zielort</b></Popup>
                        </Marker>
                        
@@ -1783,8 +1810,9 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
           
           {q.type === 'geo' && (
               <div className="space-y-4">
-                  <div className="h-[350px] w-full rounded-2xl overflow-hidden border border-sky-200 z-0 relative shadow-sm">
-                      <MapContainer center={[51.165, 10.451]} zoom={5} style={{ height: '100%', width: '100%' }}>
+                  <div className="w-full rounded-2xl overflow-hidden border border-sky-200 z-0 relative shadow-sm">
+                      {/* CRASH FIX: Feste CSS Höhe auf dem Container */}
+                      <MapContainer center={[51.165, 10.451]} zoom={5} style={{ height: '350px', width: '100%' }}>
                          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
                          <LocationPicker position={v} onSelect={setV} />
                       </MapContainer>
