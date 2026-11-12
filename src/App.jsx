@@ -95,11 +95,24 @@ const MapFitter = ({ bounds }) => {
 
 // CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
 function LocationPicker({ position, onSelect, icon }) {
-  useMapEvents({
-      click(e) {
-          if (onSelect) onSelect(e.latlng);
-      }
-  });
+  const map = useMap();
+  
+  useEffect(() => {
+    // Event Handler außerhalb des JSX-Render-Cycles
+    const handleMapClick = (e) => {
+        if (typeof onSelect === 'function') {
+            onSelect(e.latlng);
+        }
+    };
+
+    // Das Event an die Karte binden
+    map.on('click', handleMapClick);
+
+    // Aufräumen, wenn die Komponente verschwindet
+    return () => {
+        map.off('click', handleMapClick);
+    };
+  }, [map, onSelect]); // Abhängigkeiten für React
 
   if (!position || typeof position.lat !== 'number' || isNaN(position.lat)) return null;
   return <Marker position={position} {...(icon ? { icon } : {})} />;
