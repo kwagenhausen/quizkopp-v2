@@ -19,7 +19,7 @@ const getPinIcon = (isTarget = false) => {
 };
 
 // --- DIE NATIVE, CRASH-SICHERE ALL-IN-ONE KARTE ---
-const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readOnly = false }) => {
+const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readOnly = false, hideLabels = false }) => {
     const mapDomRef = useRef(null);
     const mapRef = useRef(null);
     const markerRef = useRef(null);
@@ -32,11 +32,18 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
         const map = L.map(mapDomRef.current).setView([lat || 51.165, lng || 10.451], readOnly ? 5 : 6);
         mapRef.current = map;
         
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; OpenStreetMap'
-        }).addTo(map);
+        // 2. KARTEN-MATERIAL AUSWÄHLEN (Mit oder Ohne Text)
+        const tileUrl = hideLabels 
+            ? 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png'
+            : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+            
+        const attribution = hideLabels
+            ? '&copy; OpenStreetMap &copy; CARTO'
+            : '&copy; OpenStreetMap';
 
-        // 2. Klick-Event für Setup und Spieler binden
+        L.tileLayer(tileUrl, { attribution }).addTo(map);
+
+        // 3. Klick-Event für Setup und Spieler binden
         if (onMapClick && !readOnly) {
             map.on('click', (e) => onMapClick(e.latlng));
         }
@@ -50,7 +57,7 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
         };
     }, []); // Läuft nur 1x beim Start
 
-    // 3. Haupt-Marker (Ziel oder Spieler-Tipp) aktualisieren
+    // 4. Haupt-Marker (Ziel oder Spieler-Tipp) aktualisieren
     useEffect(() => {
         if (!mapRef.current) return;
         if (lat != null && lng != null && !isNaN(lat)) {
@@ -63,7 +70,7 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
         }
     }, [lat, lng, isTarget, readOnly]);
 
-    // 4. Reveal-Pins (Alle Spieler beim Auflösen) zeichnen
+    // 5. Reveal-Pins (Alle Spieler beim Auflösen) zeichnen
     useEffect(() => {
         if (!mapRef.current || !readOnly) return;
         
@@ -102,6 +109,29 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
 
     return <div ref={mapDomRef} className="w-full h-full z-0 relative" />;
 };
+
+// Karten-Schutzschild
+class MapErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, errorMsg: '' };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, errorMsg: error.message || error.toString() };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-6 bg-red-50 border border-red-200 text-red-600 rounded-2xl w-full flex flex-col items-center justify-center text-center">
+          <span className="font-bold text-lg mb-2">Karte blockiert</span>
+          <p className="text-sm mb-4">Fehler: {this.state.errorMsg}</p>
+          <button onClick={() => window.location.reload()} className="bg-red-100 hover:bg-red-200 px-6 py-3 rounded-xl text-red-800 font-bold transition-colors shadow-sm">App neu laden</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // Luftlinien-Berechnung (Haversine)
 const calculateDistance = (lat1, lon1, lat2, lon2) => {
@@ -977,21 +1007,24 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
             </div>
           )}
           
-          {/* NATIVE SETUP MAP */}
+          {/* NATIVE SETUP MAP (Zeigt alle Labels für den Admin) */}
           {q.type === 'geo' && (
              <div className="w-full mt-4 bg-sky-50/50 p-4 rounded-2xl border border-sky-100 shadow-inner">
                 <p className="text-sm font-bold text-sky-700 uppercase tracking-widest mb-2">📍 Ziel-Koordinate auf der Karte setzen</p>
-                <div className="w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative" style={{ height: '350px' }}>
-                    <GeoMap 
-                        lat={q.targetLat ?? 51.165} 
-                        lng={q.targetLng ?? 10.451} 
-                        isTarget={true} 
-                        onMapClick={(p) => {
-                            const nQs=[...qs]; 
-                            nQs[qIndex] = { ...nQs[qIndex], targetLat: p.lat, targetLng: p.lng }; 
-                            setQs(nQs);
-                        }} 
-                    />
+                <div className="w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative" style={{ height: '300px' }}>
+                    <MapErrorBoundary>
+                        <GeoMap 
+                            lat={q.targetLat ?? 51.165} 
+                            lng={q.targetLng ?? 10.451} 
+                            isTarget={true} 
+                            hideLabels={false} 
+                            onMapClick={(p) => {
+                                const nQs=[...qs]; 
+                                nQs[qIndex] = { ...nQs[qIndex], targetLat: p.lat, targetLng: p.lng }; 
+                                setQs(nQs);
+                            }} 
+                        />
+                    </MapErrorBoundary>
                 </div>
                 <p className="text-xs text-slate-400 mt-2">Klicke auf die Karte, um den grünen Lösungs-Pin zu verschieben.</p>
              </div>
@@ -1356,16 +1389,19 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               </div>
             )}
             
-            {/* NATIVE REVEAL MAP (Absolut Crash-Sicher) */}
+            {/* NATIVE REVEAL MAP (Ohne Text, nur Grenzen) */}
             {q.type === 'geo' && room.status === 'revealed' && (
                <div className="w-full rounded-3xl overflow-hidden border border-sky-200 z-0 relative mb-8 shadow-inner" style={{ height: '500px' }}>
-                  <GeoMap 
-                      lat={safeTargetLat} 
-                      lng={safeTargetLng} 
-                      isTarget={true} 
-                      readOnly={true} 
-                      playerPins={playerPins} 
-                  />
+                  <MapErrorBoundary>
+                      <GeoMap 
+                          lat={safeTargetLat} 
+                          lng={safeTargetLng} 
+                          isTarget={true} 
+                          readOnly={true} 
+                          playerPins={playerPins} 
+                          hideLabels={true} 
+                      />
+                  </MapErrorBoundary>
                </div>
             )}
 
@@ -1462,7 +1498,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                         
                         {isGeo ? (
                             <p className="text-2xl font-black mt-1 text-slate-700">
-                               {dist !== null ? `${dist.toFixed(1)} km entfernt` : 'Kein Pin gesetzt'}
+                               {dist !== null && !isNaN(dist) ? `${dist.toFixed(1)} km entfernt` : 'Kein Pin gesetzt'}
                             </p>
                         ) : (
                             <p className="text-2xl italic mt-1 text-slate-700 font-medium">"{p.currentAnswer||'---'}"</p>
@@ -1830,16 +1866,19 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
               </div>
           )}
           
-          {/* NATIVE SPIELER MAP */}
+          {/* NATIVE SPIELER MAP (Ohne Text, nur Grenzen) */}
           {q.type === 'geo' && (
               <div className="space-y-4">
                   <div className="w-full rounded-2xl overflow-hidden border border-sky-200 z-0 relative shadow-sm" style={{ height: '350px' }}>
-                      <GeoMap 
-                          lat={v?.lat} 
-                          lng={v?.lng} 
-                          isTarget={false} 
-                          onMapClick={setV} 
-                      />
+                      <MapErrorBoundary>
+                          <GeoMap 
+                              lat={v?.lat} 
+                              lng={v?.lng} 
+                              isTarget={false} 
+                              onMapClick={setV} 
+                              hideLabels={true} 
+                          />
+                      </MapErrorBoundary>
                   </div>
                   <button onClick={()=>onAnswer(v)} disabled={!v || !v.lat} className="w-full bg-[#E69F00] text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">
                       Pin einloggen
