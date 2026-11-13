@@ -36,16 +36,16 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
       mapRef.current = map;
       
       // 2. KARTEN-MATERIAL AUSWÄHLEN (Abstrakt für Spieler, Standard für Setup)
-      // Stadia Stamen Toner Background: Schwarz/Weiß/Grau, extrem abstrakt, KEINE Texte, KEIN API Key nötig
+      // Esri World Gray Canvas: Nur Grenzen und Wasser, KEINE Texte, KEIN API Key!
       const tileUrl = hideLabels 
-          ? 'https://tiles.stadiamaps.com/tiles/stamen_toner_background/{z}/{x}/{y}{r}.png'
+          ? 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'
           : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
           
       const attribution = hideLabels
-          ? '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a> &copy; <a href="https://stamen.com/">Stamen Design</a>'
+          ? 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ'
           : '&copy; OpenStreetMap';
 
-      L.tileLayer(tileUrl, { attribution }).addTo(map);
+      L.tileLayer(tileUrl, { attribution, maxZoom: hideLabels ? 10 : 18 }).addTo(map);
 
       // 3. Klick-Event für Setup und Spieler binden
       if (onMapClick && !readOnly) {
