@@ -8,7 +8,7 @@ import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-// --- ABSOLUT SICHERE CSS-ICONS (Kein Bild-Laden = Kein Absturz) ---
+// --- ABSOLUT SICHERE CSS-ICONS ---
 const getPinIcon = (isTarget = false) => {
     if (typeof window === 'undefined') return null;
     return L.divIcon({
@@ -20,96 +20,125 @@ const getPinIcon = (isTarget = false) => {
 
 // --- DIE NATIVE, CRASH-SICHERE ALL-IN-ONE KARTE ---
 const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readOnly = false, hideLabels = false }) => {
-  const mapDomRef = useRef(null);
-  const mapRef = useRef(null);
-  const markerRef = useRef(null);
-  const playerElementsRef = useRef({ markers: [], lines: [] });
+    const mapDomRef = useRef(null);
+    const mapRef = useRef(null);
+    const markerRef = useRef(null);
+    const playerElementsRef = useRef({ markers: [], lines: [] });
 
-  useEffect(() => {
-      if (!mapDomRef.current || mapRef.current) return;
-      
-      // 1. Karte initialisieren
-      const map = L.map(mapDomRef.current, {
-          minZoom: 2
-      }).setView([lat || 51.165, lng || 10.451], readOnly ? 4 : 5);
-      
-      mapRef.current = map;
-      
-      // 2. KARTEN-MATERIAL AUSWÄHLEN (Abstrakt für Spieler, Standard für Setup)
-      // Esri World Gray Canvas: Nur Grenzen und Wasser, KEINE Texte, KEIN API Key!
-      const tileUrl = hideLabels 
-          ? 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'
-          : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-          
-      const attribution = hideLabels
-          ? 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ'
-          : '&copy; OpenStreetMap';
+    useEffect(() => {
+        if (!mapDomRef.current || mapRef.current) return;
+        
+        // 1. Karte initialisieren
+        const maxZoomLevel = (readOnly || hideLabels) ? 10 : 18; 
+        
+        const map = L.map(mapDomRef.current, {
+            maxZoom: maxZoomLevel,
+            minZoom: 2,
+            maxBounds: [[-90, -180], [90, 180]] // Verhindert, dass man in den "leeren Raum" scrollt
+        }).setView([lat || 51.165, lng || 10.451], readOnly ? 4 : 5);
+        
+        mapRef.current = map;
+        
+        // 2. KARTEN-MATERIAL AUSWÄHLEN (GeoJSON für Spieler, Standard für Setup)
+        if (hideLabels) {
+            // GENIALER TRICK: Wir nutzen keine Kacheln mehr, sondern zeichnen die Vektoren selbst!
+            // Dadurch 100% kostenlos, 0% Wasserzeichen, 0% Text. Exakt wie auf deinem Screenshot.
+            mapDomRef.current.style.backgroundColor = '#F9F5F0'; // Beige/Pinker Ozean-Hintergrund
+            
+            // Wir laden eine schlanke Datei mit allen Ländergrenzen der Welt
+            fetch('https://raw.githubusercontent.com/holtzy/D3-graph-gallery/master/DATA/world.geojson')
+                .then(res => res.json())
+                .then(data => {
+                    if (!mapRef.current) return;
+                    L.geoJSON(data, {
+                        interactive: false, // WICHTIG: Lässt Klicks auf die Länder durch zur Karte!
+                        style: {
+                            interactive: false,
+                            color: '#FFFFFF', // Weiße Grenzen
+                            weight: 1,
+                            fillColor: '#2A81A1', // Das schöne Teal/Blau aus deinem Screenshot
+                            fillOpacity: 1
+                        }
+                    }).addTo(mapRef.current);
+                })
+                .catch(e => console.error("Konnte Ländergrenzen nicht laden:", e));
+        } else {
+            // Im Admin/Setup-Modus nutzen wir die detaillierte OpenStreetMap
+            mapDomRef.current.style.backgroundColor = '#aad3df';
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { 
+                attribution: '&copy; OpenStreetMap',
+                maxZoom: maxZoomLevel
+            }).addTo(map);
+        }
 
-      L.tileLayer(tileUrl, { attribution, maxZoom: hideLabels ? 10 : 18 }).addTo(map);
+        // 3. Klick-Event für Setup und Spieler binden
+        if (onMapClick && !readOnly) {
+            map.on('click', (e) => {
+                // Nur nackte Koordinaten weitergeben, verhindert Abstürze!
+                onMapClick({ lat: e.latlng.lat, lng: e.latlng.lng });
+            });
+        }
 
-      // 3. Klick-Event für Setup und Spieler binden
-      if (onMapClick && !readOnly) {
-          map.on('click', (e) => {
-              onMapClick({ lat: e.latlng.lat, lng: e.latlng.lng });
-          });
-      }
+        // Cleanup beim Schließen
+        return () => {
+            if (mapRef.current) {
+                mapRef.current.remove();
+                mapRef.current = null;
+            }
+        };
+    }, []); // Läuft nur 1x beim Start
 
-      // Cleanup beim Schließen
-      return () => {
-          if (mapRef.current) {
-              mapRef.current.remove();
-              mapRef.current = null;
-          }
-      };
-  }, []); // Läuft nur 1x beim Start
+    // 4. Haupt-Marker (Ziel oder Spieler-Tipp) aktualisieren
+    useEffect(() => {
+        if (!mapRef.current) return;
+        if (lat != null && lng != null && !isNaN(lat)) {
+            if (!markerRef.current) {
+                markerRef.current = L.marker([lat, lng], { icon: getPinIcon(isTarget) }).addTo(mapRef.current);
+                if (readOnly && isTarget) markerRef.current.bindPopup("<b>Zielort</b>");
+            } else {
+                markerRef.current.setLatLng([lat, lng]);
+            }
+        }
+    }, [lat, lng, isTarget, readOnly]);
 
-  // 4. Haupt-Marker aktualisieren
-  useEffect(() => {
-      if (!mapRef.current) return;
-      if (lat != null && lng != null && !isNaN(lat)) {
-          if (!markerRef.current) {
-              markerRef.current = L.marker([lat, lng], { icon: getPinIcon(isTarget) }).addTo(mapRef.current);
-              if (readOnly && isTarget) markerRef.current.bindPopup("<b>Zielort</b>");
-          } else {
-              markerRef.current.setLatLng([lat, lng]);
-          }
-      }
-  }, [lat, lng, isTarget, readOnly]);
+    // 5. Reveal-Pins (Alle Spieler beim Auflösen) zeichnen
+    useEffect(() => {
+        if (!mapRef.current || !readOnly) return;
+        
+        // Alte Linien und Marker der Spieler entfernen
+        playerElementsRef.current.markers.forEach(m => m.remove());
+        playerElementsRef.current.lines.forEach(l => l.remove());
+        playerElementsRef.current = { markers: [], lines: [] };
 
-  // 5. Reveal-Pins zeichnen
-  useEffect(() => {
-      if (!mapRef.current || !readOnly) return;
-      
-      playerElementsRef.current.markers.forEach(m => m.remove());
-      playerElementsRef.current.lines.forEach(l => l.remove());
-      playerElementsRef.current = { markers: [], lines: [] };
+        const mapBounds = [];
+        if (lat != null && lng != null) mapBounds.push([lat, lng]);
 
-      const mapBounds = [];
-      if (lat != null && lng != null) mapBounds.push([lat, lng]);
+        playerPins.forEach(p => {
+            if (p.lat != null && p.lng != null && !isNaN(p.lat)) {
+                // Spieler-Pin
+                const m = L.marker([p.lat, p.lng], { icon: getPinIcon(false) })
+                         .bindPopup(`<b>${p.name}</b><br/>${(p.dist || 0).toFixed(1)} km`)
+                         .addTo(mapRef.current);
+                playerElementsRef.current.markers.push(m);
 
-      playerPins.forEach(p => {
-          if (p.lat != null && p.lng != null && !isNaN(p.lat)) {
-              const m = L.marker([p.lat, p.lng], { icon: getPinIcon(false) })
-                       .bindPopup(`<b>${p.name}</b><br/>${(p.dist || 0).toFixed(1)} km`)
-                       .addTo(mapRef.current);
-              playerElementsRef.current.markers.push(m);
+                // Luftlinie zum Ziel
+                if (lat != null && lng != null) {
+                    const l = L.polyline([[lat, lng], [p.lat, p.lng]], { color: '#E69F00', weight: 3, dashArray: '5, 10' }).addTo(mapRef.current);
+                    playerElementsRef.current.lines.push(l);
+                }
+                mapBounds.push([p.lat, p.lng]);
+            }
+        });
 
-              if (lat != null && lng != null) {
-                  const l = L.polyline([[lat, lng], [p.lat, p.lng]], { color: '#E69F00', weight: 3, dashArray: '5, 10' }).addTo(mapRef.current);
-                  playerElementsRef.current.lines.push(l);
-              }
-              mapBounds.push([p.lat, p.lng]);
-          }
-      });
+        // Schön auf alle Pins herauszoomen
+        if (mapBounds.length > 1) {
+            setTimeout(() => {
+                try { mapRef.current.fitBounds(mapBounds, { padding: [50, 50], maxZoom: 10 }); } catch(e) {}
+            }, 300);
+        }
+    }, [playerPins, lat, lng, readOnly]);
 
-      if (mapBounds.length > 1) {
-          setTimeout(() => {
-              try { mapRef.current.fitBounds(mapBounds, { padding: [50, 50], maxZoom: 12 }); } catch(e) {}
-          }, 300);
-      }
-  }, [playerPins, lat, lng, readOnly]);
-
-  return <div ref={mapDomRef} className="w-full h-full z-0 relative" />;
+    return <div ref={mapDomRef} className="w-full h-full z-0 relative" />;
 };
 
 // Karten-Schutzschild
@@ -821,7 +850,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
     const headers = "Typ;Frage;Option 1;Option 2;Option 3;Option 4;Lösung;Timer;Bild/Video/Audio URL;Notiz\n";
     const example1 = "multiple;Wie hoch ist der Eiffelturm?;300m;330m;350m;400m;2;30;;Der Eiffelturm wurde 1889 zur Weltausstellung erbaut.\n";
     const example2 = "text;Wer schrieb Faust?;-;-;-;-;Goethe;30;;\n";
-    const example3 = "estimation;Wie alt wurde die ältuche Schildkröte?;-;-;-;-;188;30;;\n";
+    const example3 = "estimation;Wie alt wurde die älteste Schildkröte?;-;-;-;-;188;30;;\n";
     const example4 = "buzzer;Erkenne dieses Lied (Audio läuft über Beamer);-;-;-;-;Queen - Bohemian Rhapsody;0;/song1.mp3;\n";
     const example5 = "break;Ende von Runde 1 - Zwischenstand!;-;-;-;-;-;0;;\n";
     
@@ -1391,7 +1420,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               </div>
             )}
             
-            {/* NATIVE REVEAL MAP (Ohne Text, nur Grenzen) */}
+            {/* NATIVE REVEAL MAP (Ohne Text, nur Vektoren-Grenzen) */}
             {q.type === 'geo' && room.status === 'revealed' && (
                <div className="w-full rounded-3xl overflow-hidden border border-sky-200 z-0 relative mb-8 shadow-inner" style={{ height: '500px' }}>
                   <MapErrorBoundary>
