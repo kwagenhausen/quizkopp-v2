@@ -76,16 +76,29 @@ const MapFitter = ({ bounds }) => {
   return null;
 };
 
-// CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
-function LocationPicker({ position, onSelect, isTarget }) {
-  useMapEvents({
-      click(e) {
-          if (onSelect) onSelect(e.latlng);
-      }
-  });
+/// ABSOLUT CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
+function LocationPicker({ position, onSelect, icon }) {
+  const map = useMap();
+  
+  useEffect(() => {
+    if (!map) return;
+    
+    // Direkter Event-Listener auf das Leaflet-Karten-Objekt
+    const onMapClick = (e) => {
+        if (e.latlng && typeof onSelect === 'function') {
+            onSelect(e.latlng);
+        }
+    };
+
+    map.on('click', onMapClick);
+
+    return () => {
+        map.off('click', onMapClick);
+    };
+  }, [map, onSelect]);
 
   if (!position || typeof position.lat !== 'number' || isNaN(position.lat)) return null;
-  return <Marker position={[position.lat, position.lng]} icon={getPinIcon(isTarget)} />;
+  return <Marker position={position} {...(icon ? { icon } : {})} />;
 }
 
 // --- KONFIGURATION ---
