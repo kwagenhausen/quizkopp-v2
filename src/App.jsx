@@ -4,17 +4,16 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
 
-// --- KARTEN IMPORTE ---
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap, useMapEvents } from 'react-leaflet';
+// --- KARTEN IMPORTE (NUR NATIVES LEAFLET!) ---
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-// --- NEU: ABSOLUT SICHERE ICONS (Keine Prototype-Hacks mehr!) ---
+// --- ABSOLUT SICHERE ICONS OHNE HACKS ---
 let defaultIcon;
 let targetIcon;
 
 const getPinIcon = (isTarget = false) => {
-    if (typeof window === 'undefined') return null; // SSR Schutz
+    if (typeof window === 'undefined') return null; // SSR Schutz für Vercel
     if (!defaultIcon) {
         defaultIcon = new L.Icon({
             iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
@@ -36,28 +35,101 @@ const getPinIcon = (isTarget = false) => {
     return isTarget ? targetIcon : defaultIcon;
 };
 
-// Karten-Schutzschild
-class MapErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false, errorMsg: '' };
-  }
-  static getDerivedStateFromError(error) {
-    return { hasError: true, errorMsg: error.message || error.toString() };
-  }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="p-6 bg-red-50 border border-red-200 text-red-600 rounded-2xl w-full flex flex-col items-center justify-center text-center">
-          <span className="font-bold text-lg mb-2 flex items-center gap-2"><XCircle size={24}/> Karte blockiert</span>
-          <p className="text-sm mb-4">Fehler: {this.state.errorMsg}</p>
-          <button onClick={() => window.location.reload()} className="bg-red-100 hover:bg-red-200 px-6 py-3 rounded-xl text-red-800 font-bold transition-colors shadow-sm">App neu laden</button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
+// --- NATIVE LEAFLET KOMPONENTEN (CRASH-SICHER) ---
+
+// 1. Die Karte zum Auswählen (Setup & Spieler)
+const VanillaSetupMap = ({ lat, lng, onMapClick, isTarget }) => {
+    const mapRef = useRef(null);
+    const mapDomRef = useRef(null);
+    const markerRef = useRef(null);
+
+    useEffect(() => {
+        if (!mapDomRef.current || mapRef.current) return;
+        
+        // Initiale Karte laden
+        mapRef.current = L.map(mapDomRef.current).setView([51.165, 10.451], 5);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(mapRef.current);
+        
+        // Klick Event
+        mapRef.current.on('click', (e) => {
+            if (onMapClick) onMapClick(e.latlng);
+        });
+        
+        // Sauber abräumen beim Schließen
+        return () => {
+            if (mapRef.current) {
+                mapRef.current.remove();
+                mapRef.current = null;
+                markerRef.current = null;
+            }
+        };
+    }, []); 
+
+    // Marker aktualisieren, wenn sich die Koordinaten ändern
+    useEffect(() => {
+        if (!mapRef.current) return;
+        if (lat != null && lng != null && !isNaN(lat)) {
+            if (!markerRef.current) {
+                markerRef.current = L.marker([lat, lng], { icon: getPinIcon(isTarget) }).addTo(mapRef.current);
+            } else {
+                markerRef.current.setLatLng([lat, lng]);
+            }
+        }
+    }, [lat, lng, isTarget]);
+
+    return <div ref={mapDomRef} className="w-full h-full z-0 relative" />;
+};
+
+// 2. Die Karte zum Auflösen (Beamer & Regie)
+const VanillaRevealMap = ({ targetLat, targetLng, playerPins }) => {
+    const mapRef = useRef(null);
+    const mapDomRef = useRef(null);
+
+    useEffect(() => {
+        if (!mapDomRef.current || mapRef.current) return;
+        
+        const tLat = Number(targetLat) || 51.165;
+        const tLng = Number(targetLng) || 10.451;
+
+        const map = L.map(mapDomRef.current).setView([tLat, tLng], 5);
+        mapRef.current = map;
+        
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        
+        // Das Ziel setzen
+        L.marker([tLat, tLng], { icon: getPinIcon(true) })
+         .bindPopup("<b>Zielort</b>")
+         .addTo(map);
+         
+        const bounds = [[tLat, tLng]];
+
+        // Alle Spieler-Nadeln & Linien einzeichnen
+        playerPins.forEach(p => {
+            if (p.lat != null && p.lng != null && !isNaN(p.lat)) {
+                L.marker([p.lat, p.lng], { icon: getPinIcon(false) })
+                 .bindPopup(`<b>${p.name}</b><br/>${p.dist.toFixed(1)} km`)
+                 .addTo(map);
+                 
+                L.polyline([[tLat, tLng], [p.lat, p.lng]], { color: '#E69F00', weight: 3, dashArray: '5, 10' }).addTo(map);
+                bounds.push([p.lat, p.lng]);
+            }
+        });
+
+        // Automatisch herauszoomen, damit alle Nadeln sichtbar sind
+        if (bounds.length > 0) {
+            setTimeout(() => {
+                try { map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 }); } catch(e) {}
+            }, 300);
+        }
+
+        return () => {
+            map.remove();
+            mapRef.current = null;
+        };
+    }, [targetLat, targetLng, playerPins]);
+
+    return <div ref={mapDomRef} className="w-full h-full z-0 relative" />;
+};
 
 // Luftlinien-Berechnung (Haversine)
 const calculateDistance = (lat1, lon1, lat2, lon2) => {
@@ -68,33 +140,6 @@ const calculateDistance = (lat1, lon1, lat2, lon2) => {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
   return R * c; 
 };
-
-// Hilfs-Komponente für das automatische Zoomen auf alle Pins
-const MapFitter = ({ bounds }) => {
-  const map = useMap();
-  useEffect(() => { 
-      if (bounds && bounds.length > 0) {
-          try {
-              setTimeout(() => {
-                  if (map && map.fitBounds) map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
-              }, 200);
-          } catch(e) { console.error(e); } 
-      } 
-  }, [bounds, map]);
-  return null;
-};
-
-// CRASH-SICHERE Hilfs-Komponente für den Klick auf die Karte
-function LocationPicker({ position, onSelect, isTarget }) {
-  useMapEvents({
-      click(e) {
-          if (onSelect) onSelect(e.latlng);
-      }
-  });
-
-  if (!position || typeof position.lat !== 'number' || isNaN(position.lat)) return null;
-  return <Marker position={[position.lat, position.lng]} icon={getPinIcon(isTarget)} />;
-}
 
 // --- KONFIGURATION ---
 const ADMIN_PASSWORD = "quiz"; // DEIN PASSWORT
@@ -960,23 +1005,22 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
             </div>
           )}
           
+          {/* NEU: ISOLIERTE VANILLA MAP FÜR DAS SETUP */}
           {q.type === 'geo' && (
              <div className="w-full mt-4 bg-sky-50/50 p-4 rounded-2xl border border-sky-100 shadow-inner">
                 <p className="text-sm font-bold text-sky-700 uppercase tracking-widest mb-2">📍 Ziel-Koordinate auf der Karte setzen</p>
-                <div className="w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative">
+                <div className="w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative" style={{ height: '300px' }}>
                     <MapErrorBoundary>
-                        <MapContainer center={[Number(q.targetLat) || 51.165, Number(q.targetLng) || 10.451]} zoom={5} style={{ height: '300px', width: '100%' }}>
-                           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                           <LocationPicker 
-                               position={{lat: Number(q.targetLat) || 51.165, lng: Number(q.targetLng) || 10.451}} 
-                               isTarget={true} 
-                               onSelect={(p) => {
-                                   const nQs=[...qs]; 
-                                   nQs[qIndex] = { ...nQs[qIndex], targetLat: p.lat, targetLng: p.lng }; 
-                                   setQs(nQs);
-                               }} 
-                           />
-                        </MapContainer>
+                        <VanillaSetupMap 
+                            lat={q.targetLat} 
+                            lng={q.targetLng} 
+                            isTarget={true} 
+                            onMapClick={(p) => {
+                                const nQs=[...qs]; 
+                                nQs[qIndex] = { ...nQs[qIndex], targetLat: p.lat, targetLng: p.lng }; 
+                                setQs(nQs);
+                            }} 
+                        />
                     </MapErrorBoundary>
                 </div>
                 <p className="text-xs text-slate-400 mt-2">Klicke auf die Karte, um den grünen Lösungs-Pin zu verschieben.</p>
@@ -1256,12 +1300,21 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     );
   }
 
+  // Sichere Geo-Daten für das Host-Reveal
   const safeTargetLat = Number(q.targetLat) || 51.165691;
   const safeTargetLng = Number(q.targetLng) || 10.451526;
-  const mapBounds = [
-      [safeTargetLat, safeTargetLng],
-      ...players.filter(p => p.currentAnswer?.lat).map(p => [Number(p.currentAnswer.lat), Number(p.currentAnswer.lng)])
-  ].filter(b => !isNaN(b[0]) && !isNaN(b[1]));
+  const playerPins = players.map(p => {
+      if (!p.currentAnswer?.lat || isNaN(Number(p.currentAnswer.lat))) return null;
+      const pLat = Number(p.currentAnswer.lat);
+      const pLng = Number(p.currentAnswer.lng);
+      return {
+          id: p.id,
+          name: p.team || p.name,
+          lat: pLat,
+          lng: pLng,
+          dist: calculateDistance(safeTargetLat, safeTargetLng, pLat, pLng)
+      };
+  }).filter(Boolean);
 
   return (
     <>
@@ -1333,40 +1386,15 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               </div>
             )}
             
+            {/* NEU: NATIVE REVEAL MAP (Absolut Crash-Sicher) */}
             {q.type === 'geo' && room.status === 'revealed' && (
-               <div className="w-full rounded-3xl overflow-hidden border border-sky-200 z-0 relative mb-8 shadow-inner">
+               <div className="w-full rounded-3xl overflow-hidden border border-sky-200 z-0 relative mb-8 shadow-inner" style={{ height: '500px' }}>
                   <MapErrorBoundary>
-                   <MapContainer center={[safeTargetLat, safeTargetLng]} zoom={5} style={{ height: '500px', width: '100%' }}>
-                       <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                       <MapFitter bounds={mapBounds} />
-                       
-                       <Marker position={[safeTargetLat, safeTargetLng]} icon={getPinIcon(true)}>
-                           <Popup><b>Zielort</b></Popup>
-                       </Marker>
-                       
-                       {players.map(p => {
-                           if (!p.currentAnswer?.lat || isNaN(Number(p.currentAnswer.lat))) return null;
-                           const pLat = Number(p.currentAnswer.lat);
-                           const pLng = Number(p.currentAnswer.lng);
-                           const dist = calculateDistance(safeTargetLat, safeTargetLng, pLat, pLng);
-                           return (
-                               <React.Fragment key={p.id}>
-                                   <Marker position={[pLat, pLng]} icon={getPinIcon(false)}>
-                                       <Popup>
-                                           <b>{p.team || p.name}</b><br/>
-                                           {dist.toFixed(1)} km
-                                       </Popup>
-                                   </Marker>
-                                   <Polyline 
-                                       positions={[[safeTargetLat, safeTargetLng], [pLat, pLng]]} 
-                                       color="#E69F00" 
-                                       weight={3} 
-                                       dashArray="5, 10" 
-                                   />
-                               </React.Fragment>
-                           )
-                       })}
-                   </MapContainer>
+                      <VanillaRevealMap 
+                          targetLat={safeTargetLat} 
+                          targetLng={safeTargetLng} 
+                          playerPins={playerPins} 
+                      />
                   </MapErrorBoundary>
                </div>
             )}
@@ -1452,7 +1480,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                 const basePts = stepInfo ? stepInfo.points : 1;
                 
                 const isGeo = q.type === 'geo';
-                const dist = isGeo && p.currentAnswer?.lat ? calculateDistance(safeTargetLat, safeTargetLng, p.currentAnswer.lat, p.currentAnswer.lng) : null;
+                const dist = isGeo && p.currentAnswer?.lat ? calculateDistance(safeTargetLat, safeTargetLng, Number(p.currentAnswer.lat), Number(p.currentAnswer.lng)) : null;
                 
                 return (
                   <div key={p.id} className="flex flex-col sm:flex-row gap-4 justify-between sm:items-center bg-slate-50 p-6 rounded-2xl border border-sky-50 shadow-sm">
@@ -1464,7 +1492,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                         
                         {isGeo ? (
                             <p className="text-2xl font-black mt-1 text-slate-700">
-                               {dist !== null ? `${dist.toFixed(1)} km entfernt` : 'Kein Pin gesetzt'}
+                               {dist !== null && !isNaN(dist) ? `${dist.toFixed(1)} km entfernt` : 'Kein Pin gesetzt'}
                             </p>
                         ) : (
                             <p className="text-2xl italic mt-1 text-slate-700 font-medium">"{p.currentAnswer||'---'}"</p>
@@ -1834,12 +1862,14 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
           
           {q.type === 'geo' && (
               <div className="space-y-4">
-                  <div className="w-full rounded-2xl overflow-hidden border border-sky-200 z-0 relative shadow-sm">
+                  <div className="w-full rounded-2xl overflow-hidden border border-sky-200 z-0 relative shadow-sm" style={{ height: '350px' }}>
                      <MapErrorBoundary>
-                      <MapContainer center={[51.165, 10.451]} zoom={5} style={{ height: '350px', width: '100%' }}>
-                         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                         <LocationPicker position={v} onSelect={setV} icon={getPinIcon(false)} />
-                      </MapContainer>
+                         <VanillaSetupMap 
+                             lat={v?.lat} 
+                             lng={v?.lng} 
+                             onMapClick={setV} 
+                             isTarget={false} 
+                         />
                      </MapErrorBoundary>
                   </div>
                   <button onClick={()=>onAnswer(v)} disabled={!v || !v.lat} className="w-full bg-[#E69F00] text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">
