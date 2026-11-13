@@ -28,21 +28,21 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
   useEffect(() => {
       if (!mapDomRef.current || mapRef.current) return;
       
-      // 1. Karte initialisieren (Keine künstliche Zoom-Begrenzung mehr nötig)
+      // 1. Karte initialisieren
       const map = L.map(mapDomRef.current, {
           minZoom: 2
       }).setView([lat || 51.165, lng || 10.451], readOnly ? 4 : 5);
       
       mapRef.current = map;
       
-      // 2. KARTEN-MATERIAL AUSWÄHLEN (Vektor/Abstrakt für Spieler, Standard für Setup)
-      // CartoDB Positron (No Labels) ist perfekt für Geo-Quizzes!
+      // 2. KARTEN-MATERIAL AUSWÄHLEN (Abstrakt für Spieler, Standard für Setup)
+      // Stadia Stamen Toner Background: Schwarz/Weiß/Grau, extrem abstrakt, KEINE Texte, KEIN API Key nötig
       const tileUrl = hideLabels 
-          ? 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png'
+          ? 'https://tiles.stadiamaps.com/tiles/stamen_toner_background/{z}/{x}/{y}{r}.png'
           : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
           
       const attribution = hideLabels
-          ? '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+          ? '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a> &copy; <a href="https://stamen.com/">Stamen Design</a>'
           : '&copy; OpenStreetMap';
 
       L.tileLayer(tileUrl, { attribution }).addTo(map);
@@ -50,7 +50,6 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
       // 3. Klick-Event für Setup und Spieler binden
       if (onMapClick && !readOnly) {
           map.on('click', (e) => {
-              // Nur nackte Koordinaten weitergeben!
               onMapClick({ lat: e.latlng.lat, lng: e.latlng.lng });
           });
       }
@@ -64,7 +63,7 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
       };
   }, []); // Läuft nur 1x beim Start
 
-  // 4. Haupt-Marker (Ziel oder Spieler-Tipp) aktualisieren
+  // 4. Haupt-Marker aktualisieren
   useEffect(() => {
       if (!mapRef.current) return;
       if (lat != null && lng != null && !isNaN(lat)) {
@@ -77,11 +76,10 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
       }
   }, [lat, lng, isTarget, readOnly]);
 
-  // 5. Reveal-Pins (Alle Spieler beim Auflösen) zeichnen
+  // 5. Reveal-Pins zeichnen
   useEffect(() => {
       if (!mapRef.current || !readOnly) return;
       
-      // Alte Linien und Marker der Spieler entfernen
       playerElementsRef.current.markers.forEach(m => m.remove());
       playerElementsRef.current.lines.forEach(l => l.remove());
       playerElementsRef.current = { markers: [], lines: [] };
@@ -91,13 +89,11 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
 
       playerPins.forEach(p => {
           if (p.lat != null && p.lng != null && !isNaN(p.lat)) {
-              // Spieler-Pin
               const m = L.marker([p.lat, p.lng], { icon: getPinIcon(false) })
                        .bindPopup(`<b>${p.name}</b><br/>${(p.dist || 0).toFixed(1)} km`)
                        .addTo(mapRef.current);
               playerElementsRef.current.markers.push(m);
 
-              // Luftlinie zum Ziel
               if (lat != null && lng != null) {
                   const l = L.polyline([[lat, lng], [p.lat, p.lng]], { color: '#E69F00', weight: 3, dashArray: '5, 10' }).addTo(mapRef.current);
                   playerElementsRef.current.lines.push(l);
@@ -106,7 +102,6 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
           }
       });
 
-      // Schön auf alle Pins herauszoomen
       if (mapBounds.length > 1) {
           setTimeout(() => {
               try { mapRef.current.fitBounds(mapBounds, { padding: [50, 50], maxZoom: 12 }); } catch(e) {}
