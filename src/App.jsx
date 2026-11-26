@@ -9,14 +9,31 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // --- ABSOLUT SICHERE CSS-ICONS ---
-const getPinIcon = (isTarget = false) => {
+const getPinIcon = (isTarget = false, opts = {}) => {
     if (typeof window === 'undefined') return null;
+    const size = isTarget || opts.winner ? 30 : 24;
+    const color = isTarget ? '#DC2626' : (opts.winner ? '#FACC15' : '#E69F00');
     return L.divIcon({
         className: 'custom-css-pin',
-        html: `<div style="background-color: ${isTarget ? '#DC2626' : '#E69F00'}; width: 24px; height: 24px; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 6px rgba(0,0,0,0.4); position: relative; top: -12px; left: -12px;"></div>`,
+        html: `<div class="${opts.drop ? 'geo-pin-drop' : ''}" style="background-color: ${color}; width: ${size}px; height: ${size}px; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 6px rgba(0,0,0,0.4); position: relative; top: -${size / 2}px; left: -${size / 2}px;"></div>`,
         iconSize: [0, 0]
     });
 };
+
+const GEO_CSS = `
+.geo-pin-drop { animation: geoPinDrop .8s cubic-bezier(.34,1.56,.64,1) both; }
+@keyframes geoPinDrop { 0% { transform: translateY(-80px) scale(.6); opacity: 0; } 50% { opacity: 1; } 100% { transform: translateY(0) scale(1); opacity: 1; } }
+.geo-line { animation: geoLineIn .5s ease-out both; }
+@keyframes geoLineIn { from { opacity: 0; } to { opacity: 1; } }
+.leaflet-tooltip.geo-label { background: rgba(15,23,42,.88); color: #fff; border: none; border-radius: 8px; font-weight: 700; font-size: 12px; padding: 3px 8px; box-shadow: 0 2px 6px rgba(0,0,0,.3); }
+.leaflet-tooltip-top.geo-label:before { border-top-color: rgba(15,23,42,.88); }
+.leaflet-tooltip.geo-label-target { background: #DC2626; font-size: 15px; }
+.leaflet-tooltip-top.geo-label-target:before { border-top-color: #DC2626; }
+.leaflet-tooltip.geo-label-winner { background: #CA8A04; font-size: 15px; }
+.leaflet-tooltip-top.geo-label-winner:before { border-top-color: #CA8A04; }
+`;
+
+const formatKm = (d) => (d == null || isNaN(d)) ? '' : `${d < 10 ? d.toFixed(1) : Math.round(d).toLocaleString('de-DE')} km`;
 
 // --- KARTENSTILE & STARTAUSSCHNITTE FÜR DAS GEO-QUIZ ---
 // Beide Stile sind kostenlos, ohne API-Schlüssel und zeigen keine Ländergrenzen, Städte oder Beschriftungen.
@@ -49,50 +66,94 @@ const loadLandGeoJSON = () => {
     return landPromise;
 };
 
-const addComicLayers = (map, mapDom) => {
-    mapDom.style.backgroundColor = '#4FB6EC'; // helles Meerblau
+// Wechselt die Hintergrundkarte: 'comic', 'satellite' oder 'real' (echte Karte mit Beschriftung).
+// Mit fade=true wird die echte Karte weich über die bisherige geblendet.
+const setBaseLayer = (map, mapDom, style, groupRef, fade = false) => {
+    if (!map.getPane('basePane')) {
+        map.createPane('basePane');
+        map.getPane('basePane').style.zIndex = 150; // unter den Kacheln, damit die echte Karte darüber blenden kann
+    }
     let closed = false;
     map.on('unload', () => { closed = true; });
+
+    const oldGroup = groupRef.current;
+    const group = L.layerGroup().addTo(map);
+    groupRef.current = group;
+    const removeOld = () => { if (oldGroup) { try { map.removeLayer(oldGroup); } catch (e) {} } };
+
+    if (style === 'real') {
+        const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap', maxZoom: 18, zIndex: 10, opacity: fade ? 0 : 1
+        }).addTo(group);
+        if (fade) {
+            const container = osm.getContainer();
+            if (container) container.style.transition = 'opacity 1.4s ease-in-out';
+            let shown = false;
+            const show = () => {
+                if (shown || closed) return;
+                shown = true;
+                osm.setOpacity(1);
+                setTimeout(() => { if (!closed) { mapDom.style.backgroundColor = '#aad3df'; removeOld(); } }, 1600);
+            };
+            osm.once('load', show);
+            setTimeout(show, 1200); // falls "load" nicht kommt
+        } else {
+            mapDom.style.backgroundColor = '#aad3df';
+            removeOld();
+        }
+        return;
+    }
+
+    removeOld();
+
+    if (style === 'satellite') {
+        mapDom.style.backgroundColor = '#0B2A4A';
+        const nasa = L.tileLayer('https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/EPSG3857_500m/{z}/{y}/{x}.jpeg', {
+            maxNativeZoom: 8, maxZoom: 10, attribution: 'NASA Blue Marble'
+        });
+        // Falls der NASA-Server streikt: automatisch auf Esri-Satellitenbilder (ebenfalls ohne Beschriftung) wechseln
+        let switched = false;
+        nasa.on('tileerror', () => {
+            if (switched || closed) return;
+            switched = true;
+            group.removeLayer(nasa);
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                maxZoom: 10, attribution: 'Esri, Maxar, Earthstar Geographics'
+            }).addTo(group);
+        });
+        nasa.addTo(group);
+        return;
+    }
+
+    // Comic-Stil
+    mapDom.style.backgroundColor = '#4FB6EC'; // helles Meerblau
     loadLandGeoJSON()
         .then(data => {
-            if (closed) return; // Karte wurde inzwischen geschlossen
-            const base = { interactive: false };
-            // Weißer Schimmer an den Küsten (zwei Lagen, breit & weich + schmal & hell)
-            L.geoJSON(data, { ...base, style: { color: '#FFFFFF', weight: 16, opacity: 0.25, fill: false, lineJoin: 'round' } }).addTo(map);
-            L.geoJSON(data, { ...base, style: { color: '#E6F7FF', weight: 6, opacity: 0.7, fill: false, lineJoin: 'round' } }).addTo(map);
+            if (closed || groupRef.current !== group) return;
+            const base = { interactive: false, pane: 'basePane' };
+            // Weißer Schimmer an den Küsten (breit & weich + schmal & hell)
+            L.geoJSON(data, { ...base, style: { color: '#FFFFFF', weight: 16, opacity: 0.25, fill: false, lineJoin: 'round' } }).addTo(group);
+            L.geoJSON(data, { ...base, style: { color: '#E6F7FF', weight: 6, opacity: 0.7, fill: false, lineJoin: 'round' } }).addTo(group);
             // Grünes Land
-            L.geoJSON(data, { ...base, style: { color: '#3F9E22', weight: 1, opacity: 1, fillColor: '#5CC032', fillOpacity: 1 } }).addTo(map);
+            L.geoJSON(data, { ...base, style: { color: '#3F9E22', weight: 1, opacity: 1, fillColor: '#5CC032', fillOpacity: 1 } }).addTo(group);
         })
         .catch(e => console.error('Konnte die Landflächen nicht laden:', e));
 };
 
-const addSatelliteLayer = (map, mapDom) => {
-    mapDom.style.backgroundColor = '#0B2A4A';
-    const nasa = L.tileLayer('https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/EPSG3857_500m/{z}/{y}/{x}.jpeg', {
-        maxNativeZoom: 8,
-        maxZoom: 10,
-        attribution: 'NASA Blue Marble'
-    });
-    // Falls der NASA-Server streikt: automatisch auf Esri-Satellitenbilder (ebenfalls ohne Beschriftung) wechseln
-    let switched = false;
-    nasa.on('tileerror', () => {
-        if (switched) return;
-        switched = true;
-        map.removeLayer(nasa);
-        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-            maxZoom: 10,
-            attribution: 'Esri, Maxar, Earthstar Geographics'
-        }).addTo(map);
-    });
-    nasa.addTo(map);
-};
-
 // --- DIE NATIVE, CRASH-SICHERE ALL-IN-ONE KARTE ---
-const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readOnly = false, hideLabels = false, mapStyle = 'comic', startView = 'europe' }) => {
+// stage (nur bei readOnly/Auflösung): 'pins' = nur Spieler-Tipps, 'target' = Ziel + echte Karte,
+// null = alte Ein-Schritt-Auflösung (Ziel sofort, Kartenstil bleibt).
+const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readOnly = false, hideLabels = false, mapStyle = 'comic', startView = 'europe', stage = null }) => {
     const mapDomRef = useRef(null);
     const mapRef = useRef(null);
     const markerRef = useRef(null);
+    const baseGroupRef = useRef(null);
+    const currentBaseRef = useRef(null);
     const playerElementsRef = useRef({ markers: [], lines: [] });
+    const timersRef = useRef([]);
+    const prevStageRef = useRef(stage);
+
+    const wantedBase = (readOnly && stage === 'target') ? 'real' : mapStyle;
 
     useEffect(() => {
         if (!mapDomRef.current || mapRef.current) return;
@@ -107,8 +168,8 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
             maxBoundsViscosity: 0.8
         });
         const view = MAP_VIEWS[startView] || MAP_VIEWS.europe;
-        if (hideLabels && !readOnly) {
-            // Spieler starten im gewählten Ausschnitt – passt sich automatisch an die Bildschirmgröße an
+        if (hideLabels && (!readOnly || stage === 'pins')) {
+            // Spieler (und die Tipp-Übersicht) starten im gewählten Ausschnitt – verrät nichts über das Ziel
             map.fitBounds(view.bounds);
         } else {
             map.setView([lat || 51.165, lng || 10.451], readOnly ? 4 : 5);
@@ -118,8 +179,8 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
         
         // 2. KARTEN-MATERIAL AUSWÄHLEN (ohne Beschriftung für Spieler & Beamer, Standard für Setup)
         if (hideLabels) {
-            if (mapStyle === 'satellite') addSatelliteLayer(map, mapDomRef.current);
-            else addComicLayers(map, mapDomRef.current);
+            setBaseLayer(map, mapDomRef.current, wantedBase, baseGroupRef, false);
+            currentBaseRef.current = wantedBase;
         } else {
             // Im Admin/Setup-Modus nutzen wir die detaillierte OpenStreetMap
             mapDomRef.current.style.backgroundColor = '#aad3df';
@@ -139,6 +200,8 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
 
         // Cleanup beim Schließen
         return () => {
+            timersRef.current.forEach(clearTimeout);
+            timersRef.current = [];
             if (mapRef.current) {
                 mapRef.current.remove();
                 mapRef.current = null;
@@ -146,57 +209,109 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
         };
     }, []); // Läuft nur 1x beim Start
 
-    // 4. Haupt-Marker (Ziel oder Spieler-Tipp) aktualisieren
+    // 4. Hintergrund wechseln, wenn die Auflösung startet (Spielkarte -> echte Karte)
     useEffect(() => {
-        if (!mapRef.current) return;
-        if (lat != null && lng != null && !isNaN(lat)) {
-            if (!markerRef.current) {
-                markerRef.current = L.marker([lat, lng], { icon: getPinIcon(isTarget) }).addTo(mapRef.current);
-                if (readOnly && isTarget) markerRef.current.bindPopup("<b>Zielort</b>");
-            } else {
-                markerRef.current.setLatLng([lat, lng]);
-            }
-        }
-    }, [lat, lng, isTarget, readOnly]);
+        const map = mapRef.current;
+        if (!map || !hideLabels || currentBaseRef.current === wantedBase) return;
+        const t = setTimeout(() => {
+            if (!mapRef.current) return;
+            setBaseLayer(mapRef.current, mapDomRef.current, wantedBase, baseGroupRef, true);
+            currentBaseRef.current = wantedBase;
+        }, 900);
+        return () => clearTimeout(t);
+    }, [wantedBase]);
 
-    // 5. Reveal-Pins (Alle Spieler beim Auflösen) zeichnen
+    // 5. Haupt-Marker (Ziel oder Spieler-Tipp) – bei der Tipp-Übersicht bleibt das Ziel noch geheim
     useEffect(() => {
-        if (!mapRef.current || !readOnly) return;
-        
-        // Alte Linien und Marker der Spieler entfernen
+        const map = mapRef.current;
+        if (!map) return;
+        const showMain = lat != null && lng != null && !isNaN(lat) && !(readOnly && stage === 'pins');
+        if (!showMain) {
+            if (markerRef.current) { markerRef.current.remove(); markerRef.current = null; }
+            return;
+        }
+        if (!markerRef.current) {
+            markerRef.current = L.marker([lat, lng], { icon: getPinIcon(isTarget, { drop: readOnly }), zIndexOffset: 1000 }).addTo(map);
+            if (readOnly && isTarget) {
+                markerRef.current.bindTooltip('🎯 Ziel', { permanent: true, direction: 'top', offset: [0, -18], className: 'geo-label geo-label-target' });
+            }
+        } else {
+            markerRef.current.setLatLng([lat, lng]);
+        }
+    }, [lat, lng, isTarget, readOnly, stage]);
+
+    // 6. Spieler-Pins, Linien und Entfernungen (nur bei der Auflösung)
+    const pinsKey = JSON.stringify((playerPins || []).map(p => [p.id, p.name, p.lat, p.lng]));
+    useEffect(() => {
+        const map = mapRef.current;
+        if (!map || !readOnly) return;
+
+        timersRef.current.forEach(clearTimeout);
+        timersRef.current = [];
         playerElementsRef.current.markers.forEach(m => m.remove());
         playerElementsRef.current.lines.forEach(l => l.remove());
         playerElementsRef.current = { markers: [], lines: [] };
 
-        const mapBounds = [];
-        if (lat != null && lng != null) mapBounds.push([lat, lng]);
+        const later = (fn, ms) => { timersRef.current.push(setTimeout(() => { if (mapRef.current) fn(); }, ms)); };
+        const pins = (playerPins || []).filter(p => p.lat != null && p.lng != null && !isNaN(p.lat));
+        const showTarget = stage !== 'pins' && lat != null && lng != null && !isNaN(lat);
+        const animate = stage === 'target' && prevStageRef.current === 'pins';
+        prevStageRef.current = stage;
 
-        playerPins.forEach(p => {
-            if (p.lat != null && p.lng != null && !isNaN(p.lat)) {
-                // Spieler-Pin
-                const m = L.marker([p.lat, p.lng], { icon: getPinIcon(false) })
-                         .bindPopup(`<b>${p.name}</b><br/>${(p.dist || 0).toFixed(1)} km`)
-                         .addTo(mapRef.current);
-                playerElementsRef.current.markers.push(m);
-
-                // Luftlinie zum Ziel
-                if (lat != null && lng != null) {
-                    const l = L.polyline([[lat, lng], [p.lat, p.lng]], { color: '#E69F00', weight: 3, dashArray: '5, 10' }).addTo(mapRef.current);
-                    playerElementsRef.current.lines.push(l);
-                }
-                mapBounds.push([p.lat, p.lng]);
-            }
+        // Pins mit Namensschild setzen
+        const entries = pins.map(p => {
+            const m = L.marker([p.lat, p.lng], { icon: getPinIcon(false, { drop: stage === 'pins' }) })
+                .bindTooltip(p.name, { permanent: true, direction: 'top', offset: [0, -14], className: 'geo-label' })
+                .addTo(map);
+            playerElementsRef.current.markers.push(m);
+            return { p, m };
         });
 
-        // Schön auf alle Pins herauszoomen
-        if (mapBounds.length > 1) {
-            setTimeout(() => {
-                try { mapRef.current.fitBounds(mapBounds, { padding: [50, 50], maxZoom: 10 }); } catch(e) {}
-            }, 300);
+        // Kartenausschnitt: alle Tipps (und ggf. das Ziel) ins Bild holen
+        const bounds = pins.map(p => [p.lat, p.lng]);
+        if (showTarget) bounds.push([lat, lng]);
+        if (bounds.length > 1) {
+            if (animate) {
+                try { map.flyToBounds(bounds, { padding: [70, 70], maxZoom: 8, duration: 1.6 }); } catch (e) {}
+            } else {
+                later(() => { try { map.fitBounds(bounds, { padding: [60, 60], maxZoom: 8 }); } catch (e) {} }, 300);
+            }
+        } else if (bounds.length === 1) {
+            later(() => { try { map.setView(bounds[0], 6); } catch (e) {} }, 300);
         }
-    }, [playerPins, lat, lng, readOnly]);
 
-    return <div ref={mapDomRef} className="w-full h-full z-0 relative" />;
+        if (!showTarget || entries.length === 0) return;
+
+        // Auflösung: Linien vom weitesten zum nächsten Tipp – der Gewinner kommt zum Schluss
+        const sorted = [...entries].sort((a, b) => (b.p.dist ?? 0) - (a.p.dist ?? 0));
+        const minDist = Math.min(...entries.map(e => e.p.dist ?? Infinity));
+        const startAt = animate ? 1900 : 0;
+        const step = animate ? Math.max(180, Math.min(450, 2400 / sorted.length)) : 0;
+
+        sorted.forEach(({ p, m }, i) => {
+            later(() => {
+                const l = L.polyline([[lat, lng], [p.lat, p.lng]], { color: '#E69F00', weight: 3, dashArray: '6, 10', className: 'geo-line' }).addTo(map);
+                playerElementsRef.current.lines.push(l);
+                m.setTooltipContent(`${p.name} · ${formatKm(p.dist)}`);
+            }, startAt + i * step);
+        });
+
+        later(() => {
+            entries.filter(e => e.p.dist === minDist).forEach(({ p, m }) => {
+                m.setIcon(getPinIcon(false, { winner: true, drop: animate }));
+                m.setZIndexOffset(900);
+                m.setTooltipContent(`🏆 ${p.name} · ${formatKm(p.dist)}`);
+                m.getTooltip()?.getElement()?.classList.add('geo-label-winner');
+            });
+        }, startAt + sorted.length * step + (animate ? 500 : 0));
+    }, [pinsKey, lat, lng, readOnly, stage]);
+
+    return (
+        <>
+            <style>{GEO_CSS}</style>
+            <div ref={mapDomRef} className="w-full h-full z-0 relative" />
+        </>
+    );
 };
 
 // Karten-Schutzschild
@@ -809,7 +924,8 @@ export default function App() {
       for (const p of players) batch.update(doc(db, 'players', p.id), { wasCorrect: false });
     }
     
-    batch.update(doc(db, 'rooms', currentRoomCode), { status: 'revealed' });
+    // Geo: Schritt 1 zeigt nur die Tipps aller Spieler, das Ziel kommt im zweiten Schritt
+    batch.update(doc(db, 'rooms', currentRoomCode), { status: 'revealed', ...(q.type === 'geo' ? { geoStage: 'pins' } : {}) });
     await batch.commit();
   };
 
@@ -888,7 +1004,8 @@ export default function App() {
               timeLeft:activeRoom.questions[nextIdx]?.timer || 0, 
               buzzerWinner: null, 
               buzzerReaction: null,
-              buzzerLockedOut: []
+              buzzerLockedOut: [],
+              geoStage: null
             });
             await batch.commit();
         }} onCorrect={manualCorrect} onBuzzerCorrect={handleBuzzerHost} onBuzzerWrongContinue={handleBuzzerWrongContinue} db={db}/>}
@@ -1470,6 +1587,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   const nextQ = room.questions[room.currentQuestionIndex + 1]; 
   const isLastQuestion = room.currentQuestionIndex >= room.questions.length - 1;
   const sortedTeams = getSortedTeams(players, room);
+  const geoPinsStage = q?.type === 'geo' && room.status === 'revealed' && room.geoStage === 'pins';
   
   const [showBuzzerAnswer, setShowBuzzerAnswer] = useState(false);
   const [numTeams, setNumTeams] = useState(2); 
@@ -1501,6 +1619,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     finally { setTimeout(() => { actionLock.current = false; }, 400); }
   };
   const goNext = () => runOnce(onNext);
+  const revealGeoTarget = () => runOnce(() => updateDoc(doc(db, 'rooms', room.id), { geoStage: 'target' }));
 
   // Weiterschalten per Tastatur oder Presenter-Klicker (→, Leertaste, Bild↓, Enter)
   useEffect(() => {
@@ -1510,7 +1629,9 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
       const tag = (e.target?.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable) return;
       if (!['ArrowRight', 'PageDown', ' ', 'Enter'].includes(e.key)) return;
-      if (isInfoItem(q) || room.status === 'revealed') {
+      if (geoPinsStage) {
+        e.preventDefault(); revealGeoTarget();
+      } else if (isInfoItem(q) || room.status === 'revealed') {
         e.preventDefault(); goNext();
       } else if (room.status === 'active' && q.type !== 'buzzer') {
         e.preventDefault(); runOnce(() => onReveal(q.type === 'estimation' ? liveEstValue : null));
@@ -1782,6 +1903,23 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   const safeTargetLng = Number(q.targetLng) || 10.451526;
   
   // Alle gesetzten Spieler-Pins sammeln
+  // Spieler nach Entfernung sortiert (ohne Pin ganz unten) + 3-2-1-Punktevorschlag
+  const getGeoDist = (p) => p.currentAnswer?.lat && !isNaN(Number(p.currentAnswer.lat))
+      ? calculateDistance(safeTargetLat, safeTargetLng, Number(p.currentAnswer.lat), Number(p.currentAnswer.lng))
+      : null;
+  const geoSortedPlayers = q.type === 'geo'
+      ? [...players].sort((a, b) => (getGeoDist(a) ?? Infinity) - (getGeoDist(b) ?? Infinity))
+      : players;
+  const awardGeoPoints = async () => {
+      const dists = players.map(p => getGeoDist(p)).filter(d => d !== null);
+      await Promise.all(players.map(p => {
+          const d = getGeoDist(p);
+          if (d === null) return onCorrect(p.id, 0);
+          const rank = dists.filter(x => x < d).length; // Gleichstand = gleicher Platz
+          return onCorrect(p.id, [3, 2, 1][rank] || 0);
+      }));
+  };
+
   const playerPins = players.map(p => {
       if (!p.currentAnswer?.lat || isNaN(Number(p.currentAnswer.lat))) return null;
       return {
@@ -1865,10 +2003,17 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
             
             {/* NATIVE REVEAL MAP (Ohne Text, nur Vektoren-Grenzen) */}
             {q.type === 'geo' && room.status === 'revealed' && (
-               <div className="w-full rounded-3xl overflow-hidden border border-sky-200 z-0 relative mb-8 shadow-inner" style={{ height: '500px' }}>
+               <div className="w-full rounded-3xl overflow-hidden border border-sky-200 z-0 relative mb-8 shadow-inner" style={{ height: '62vh', minHeight: '450px' }}>
+                  {geoPinsStage && (
+                      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[500] bg-slate-900/85 text-white px-6 py-3 rounded-full font-bold text-lg shadow-xl pointer-events-none">
+                          📍 {playerPins.length} {playerPins.length === 1 ? 'Tipp' : 'Tipps'} – wo liegt das Ziel?
+                      </div>
+                  )}
                   <MapErrorBoundary>
                       <GeoMap 
                           key={`reveal-${room.currentQuestionIndex}`}
+                          stage={room.geoStage || null}
+                          startView={q.startView || 'europe'}
                           lat={safeTargetLat} 
                           lng={safeTargetLng} 
                           isTarget={true} 
@@ -1951,9 +2096,16 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
             {room.status === 'revealed' && q.type === 'estimation' && q.showAnswers !== false && renderEstimationAnswers()}
             
-            {room.status === 'revealed' && (q.type === 'text' || q.type === 'step' || q.type === 'geo') && <div className="space-y-4 mt-8 border-t border-sky-100 pt-8">
-              <h3 className="text-xl font-bold text-slate-600 mb-4">Antworten bewerten</h3>
-              {players.map(p => {
+            {room.status === 'revealed' && !geoPinsStage && (q.type === 'text' || q.type === 'step' || q.type === 'geo') && <div className="space-y-4 mt-8 border-t border-sky-100 pt-8">
+              <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+                <h3 className="text-xl font-bold text-slate-600">{q.type === 'geo' ? '📏 Wer war am nächsten dran?' : 'Antworten bewerten'}</h3>
+                {q.type === 'geo' && !isBeamer && (
+                  <button onClick={() => runOnce(awardGeoPoints)} className="bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 px-4 py-2 rounded-xl font-bold text-sm transition-colors" title="Nächster Tipp 3 Punkte, Zweiter 2, Dritter 1 – du kannst danach noch einzeln ändern">
+                    ⚡ Punkte-Vorschlag 3 · 2 · 1 übernehmen
+                  </button>
+                )}
+              </div>
+              {geoSortedPlayers.map((p, pIdx) => {
                 const pUsedJoker = p.jokerQuestion === room.currentQuestionIndex;
                 const mult = pUsedJoker ? 2 : 1;
                 
@@ -1974,6 +2126,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                         
                         {isGeo ? (
                             <p className="text-2xl font-black mt-1 text-slate-700">
+                               {dist !== null && !isNaN(dist) && pIdx < 3 ? ['🥇 ', '🥈 ', '🥉 '][pIdx] : ''}
                                {dist !== null && !isNaN(dist) ? `${dist.toFixed(1)} km entfernt` : 'Kein Pin gesetzt'}
                             </p>
                         ) : (
@@ -2017,7 +2170,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               })}
             </div>}
 
-            {room.status === 'revealed' && q.note && (
+            {room.status === 'revealed' && !geoPinsStage && q.note && (
               <div className="bg-blue-50 border border-blue-200 p-8 rounded-2xl mb-6 mt-6 shadow-inner">
                 <p className="text-blue-600 font-bold uppercase tracking-widest mb-2 flex items-center gap-2">
                    <MessageSquare size={20}/> Hintergrundinfo / Fun Fact
@@ -2041,8 +2194,8 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
           )}
 
           {!isBeamer && (q.type !== 'buzzer' || room.status === 'revealed') && (
-            <button onClick={() => room.status === 'active' ? runOnce(() => onReveal(q.type === 'estimation' ? liveEstValue : null)) : goNext()} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
-              {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
+            <button onClick={() => room.status === 'active' ? runOnce(() => onReveal(q.type === 'estimation' ? liveEstValue : null)) : geoPinsStage ? revealGeoTarget() : goNext()} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' || geoPinsStage ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
+              {room.status === 'active' ? (q.type === 'geo' ? '📍 Alle Tipps zeigen' : 'Lösung auflösen') : geoPinsStage ? '🎯 Ziel auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
         </div>
@@ -2399,8 +2552,8 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
       
       {room.status === 'revealed' && (q.type === 'text' || q.type === 'step' || q.type === 'geo') && !player.corrected && (
           <div className="py-12 rounded-3xl border-2 text-center bg-slate-50 border-sky-100 text-slate-400 shadow-inner animate-pulse">
-             <h3 className="text-xl font-bold">Quizmaster wertet aus...</h3>
-             <p className="text-sm mt-2">Warte auf die Entscheidung.</p>
+             <h3 className="text-xl font-bold">{q.type === 'geo' && room.geoStage === 'pins' ? '📍 Alle Tipps sind jetzt vorne zu sehen!' : 'Quizmaster wertet aus...'}</h3>
+             <p className="text-sm mt-2">{q.type === 'geo' && room.geoStage === 'pins' ? 'Gleich wird das Ziel aufgelöst …' : 'Warte auf die Entscheidung.'}</p>
           </div>
       )}
       
