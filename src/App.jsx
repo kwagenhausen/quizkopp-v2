@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Folder, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload, Smartphone, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Maximize, X, Copy } from 'lucide-react';
+import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Folder, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload, Smartphone, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Maximize, X, Copy, Volume2, VolumeX, Pause } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch, query, where } from 'firebase/firestore';
@@ -593,7 +593,9 @@ function ImageInput({ value, onChange, variant = 'compact' }) {
 }
 
 // --- HELFER: FOLIEN & NUMMERIERUNG ---
-const isInfoItem = (q) => q?.type === 'break' || q?.type === 'slide';
+const isInfoItem = (q) => q?.type === 'break' || q?.type === 'slide' || q?.type === 'round';
+const isSlideLike = (q) => q?.type === 'slide' || q?.type === 'round';
+const getRoundNumber = (questions, idx) => questions.slice(0, idx + 1).filter(q => q.type === 'round').length;
 const getQuestionNumber = (questions, idx) => questions.slice(0, idx + 1).filter(q => !isInfoItem(q)).length;
 const getQuestionTotal = (questions) => questions.filter(q => !isInfoItem(q)).length;
 
@@ -605,12 +607,157 @@ const toggleFullscreen = () => {
 };
 
 // Reine Text-Folie (wenn kein Bild eingefügt ist)
-const TextSlide = ({ q }) => (
+const TextSlide = ({ q, kicker }) => (
   <div className="w-full h-full bg-gradient-to-br from-sky-600 to-indigo-900 flex flex-col items-center justify-center text-center p-16 text-white">
-    <h2 className="text-6xl lg:text-8xl font-black mb-10 leading-tight">{q.q}</h2>
-    {q.note && <p className="text-3xl lg:text-4xl font-medium whitespace-pre-line max-w-5xl opacity-90 leading-relaxed">{q.note}</p>}
+    <style>{`@keyframes qkRise { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: none; } }`}</style>
+    {kicker && <div className="text-2xl lg:text-4xl font-black tracking-[0.4em] text-[#FFD166] mb-8" style={{ animation: 'qkRise .7s ease-out both' }}>{kicker}</div>}
+    <h2 className="text-6xl lg:text-8xl font-black mb-10 leading-tight" style={{ animation: 'qkRise .8s ease-out .15s both' }}>{q.q}</h2>
+    {q.note && <p className="text-3xl lg:text-4xl font-medium whitespace-pre-line max-w-5xl opacity-90 leading-relaxed" style={{ animation: 'qkRise .8s ease-out .35s both' }}>{q.note}</p>}
   </div>
 );
+
+// --- ZAHLEN, DIE HOCHZÄHLEN ---
+const fmtPts = (n) => (Math.round(n * 2) / 2).toLocaleString('de-DE');
+const AnimatedNumber = ({ from = 0, to = 0, start = true, duration = 1300 }) => {
+  const [val, setVal] = useState(from);
+  useEffect(() => {
+    if (!start) { setVal(from); return; }
+    let raf;
+    const t0 = performance.now();
+    const tick = (t) => {
+      const k = Math.min(1, (t - t0) / duration);
+      setVal(from + (to - from) * (1 - Math.pow(1 - k, 3)));
+      if (k < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [from, to, start]);
+  return <>{fmtPts(val)}</>;
+};
+
+// --- ZWISCHENSTAND: Balken sortieren sich live neu ---
+const AnimatedRanking = ({ teams, previous = [] }) => {
+  const [moved, setMoved] = useState(false);
+  useEffect(() => { const t = setTimeout(() => setMoved(true), 900); return () => clearTimeout(t); }, []);
+  const prev = {};
+  (previous || []).forEach(x => { prev[x.name] = x.score; });
+  const ROW = 78;
+  const before = [...teams].sort((a, b) => (prev[b.name] || 0) - (prev[a.name] || 0) || a.name.localeCompare(b.name));
+  const maxScore = Math.max(1, ...teams.map(t => t.totalScore));
+  return (
+    <div className="relative" style={{ height: teams.length * ROW }}>
+      {teams.map((t, afterIdx) => {
+        const idx = moved ? afterIdx : before.findIndex(x => x.name === t.name);
+        const old = prev[t.name] || 0;
+        const delta = t.totalScore - old;
+        const pct = Math.max(2, ((moved ? t.totalScore : old) / maxScore) * 100);
+        const lead = moved && afterIdx === 0;
+        return (
+          <div key={t.name} className="absolute left-0 right-0 transition-all duration-1000 ease-in-out" style={{ top: idx * ROW, height: ROW - 12 }}>
+            <div className={`relative h-full rounded-2xl border overflow-hidden ${lead ? 'border-amber-300 shadow-lg' : 'border-sky-100'} bg-white`}>
+              <div className={`absolute inset-y-0 left-0 transition-all ease-out ${lead ? 'bg-amber-200' : 'bg-sky-100'}`} style={{ width: `${pct}%`, transitionDuration: '1400ms' }} />
+              <div className="relative h-full flex items-center justify-between px-5 gap-4">
+                <span className="text-2xl font-bold text-slate-700 flex items-center gap-3 min-w-0">
+                  <span className="w-10 text-slate-400 flex-shrink-0">{idx + 1}.</span>
+                  <span className="truncate">{lead && '👑 '}{t.name}</span>
+                </span>
+                <span className="flex items-center gap-3 flex-shrink-0">
+                  {moved && delta > 0 && <span className="text-emerald-600 font-bold text-lg bg-emerald-50 px-2 py-0.5 rounded-lg">+{fmtPts(delta)}</span>}
+                  <span className="font-mono text-3xl font-bold text-[#E69F00] w-20 text-right"><AnimatedNumber from={old} to={t.totalScore} start={moved} /></span>
+                </span>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// --- SIEGERTREPPCHEN: Platz 3, 2, 1 nacheinander enthüllen ---
+const getPodiumSize = (teams) => Math.min(3, teams.length);
+const isPlaceRevealed = (place, teamCount, step) => {
+  const k = Math.min(3, teamCount);
+  return place > k || place > k - step;
+};
+
+const Podium = ({ teams, step }) => {
+  const order = [2, 1, 3].filter(pl => pl <= teams.length);
+  const style = {
+    1: { h: 'h-64', bg: 'bg-gradient-to-b from-amber-300 to-amber-500', medal: '🥇' },
+    2: { h: 'h-48', bg: 'bg-gradient-to-b from-slate-300 to-slate-400', medal: '🥈' },
+    3: { h: 'h-36', bg: 'bg-gradient-to-b from-orange-300 to-orange-500', medal: '🥉' },
+  };
+  return (
+    <div className="flex items-end justify-center gap-4 md:gap-8">
+      {order.map(place => {
+        const t = teams[place - 1];
+        const shown = isPlaceRevealed(place, teams.length, step);
+        const st = style[place];
+        return (
+          <div key={place} className="flex flex-col items-center w-40 md:w-60">
+            <div className={`mb-4 text-center transition-all duration-700 ${shown ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-8 scale-75'}`}>
+              <div className="text-6xl mb-2">{st.medal}</div>
+              <div className="text-2xl md:text-3xl font-black text-slate-700 break-words">{t.name}</div>
+              <div className="font-mono text-3xl font-bold text-[#E69F00]">{fmtPts(t.totalScore)}</div>
+              <div className="text-xs text-slate-400 mt-1">{t.players.map(pp => pp.name).join(', ')}</div>
+            </div>
+            <div className={`w-full ${st.h} ${st.bg} rounded-t-3xl flex items-start justify-center pt-4 text-7xl font-black text-white shadow-xl`}>
+              {shown ? place : '?'}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// --- SOUNDS (werden live im Browser erzeugt – keine Dateien nötig) ---
+const Sound = (() => {
+  let ctx = null;
+  const get = () => {
+    try {
+      if (!ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        ctx = new AC();
+      }
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      return ctx;
+    } catch (e) { return null; }
+  };
+  const tone = (freq, start, dur, type = 'sine', vol = 0.2) => {
+    const c = get();
+    if (!c) return;
+    const o = c.createOscillator();
+    const g = c.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    const t = c.currentTime + start;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g);
+    g.connect(c.destination);
+    o.start(t);
+    o.stop(t + dur + 0.05);
+  };
+  return {
+    unlock: () => get(),
+    tick: () => tone(1100, 0, 0.07, 'square', 0.06),
+    timeUp: () => { tone(330, 0, 0.25, 'sawtooth', 0.12); tone(220, 0.22, 0.5, 'sawtooth', 0.12); },
+    pop: () => { tone(520, 0, 0.12, 'triangle', 0.18); tone(780, 0.08, 0.15, 'triangle', 0.14); },
+    reveal: () => [523, 659, 784, 1047].forEach((f, i) => tone(f, i * 0.09, 0.3, 'triangle', 0.18)),
+    buzzer: () => { tone(140, 0, 0.6, 'sawtooth', 0.22); tone(147, 0, 0.6, 'square', 0.1); },
+    swoosh: () => [300, 450, 600, 800].forEach((f, i) => tone(f, i * 0.05, 0.12, 'sine', 0.08)),
+    fanfare: (big = false) => {
+      const notes = big ? [523, 659, 784, 1047, 784, 1047, 1319] : [392, 523, 659, 784];
+      notes.forEach((f, i) => tone(f, i * (big ? 0.13 : 0.11), big && i === notes.length - 1 ? 0.9 : 0.25, 'triangle', 0.2));
+    },
+  };
+})();
+
+const vibrate = (pattern) => { try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) {} };
 
 const getMediaType = (url) => {
   if (!url) return 'none';
@@ -666,7 +813,7 @@ const downloadCSV = (players, room) => {
   const headers = ["Team-Platz", "Team", "Team-Punkte Gesamt", "Spieler", "Spieler-Punkte (ohne Schätzen)"];
   
   room.questions.forEach((q, i) => {
-      headers.push(q.type === 'break' ? `Pause: ${q.q.replace(/,/g, "")}` : q.type === 'slide' ? `Folie: ${(q.q || '').replace(/,/g, "")}` : `F${i+1}: ${q.q.replace(/,/g, "")}`);
+      headers.push(q.type === 'break' ? `Pause: ${q.q.replace(/,/g, "")}` : q.type === 'slide' ? `Folie: ${(q.q || '').replace(/,/g, "")}` : q.type === 'round' ? `Runde: ${(q.q || '').replace(/,/g, "")}` : `F${i+1}: ${q.q.replace(/,/g, "")}`);
   });
   
   const rows = players.map(p => {
@@ -773,6 +920,13 @@ export default function App() {
   const [adminAuth, setAdminAuth] = useState(false);
   
   const [editingQuiz, setEditingQuiz] = useState(null); 
+  const [soundOn, setSoundOn] = useState(() => { try { return localStorage.getItem('quizkopp-sound') !== 'off'; } catch (e) { return true; } });
+  const toggleSound = () => {
+    const next = !soundOn;
+    setSoundOn(next);
+    try { localStorage.setItem('quizkopp-sound', next ? 'on' : 'off'); } catch (e) {}
+    if (next) { Sound.unlock(); Sound.pop(); }
+  };
 
   useEffect(() => {
     signInAnonymously(auth);
@@ -799,14 +953,14 @@ export default function App() {
 
   useEffect(() => {
     let interval;
-    if (role === 'host' && activeRoom?.status === 'active' && activeRoom?.timeLeft > 0 && !activeRoom?.buzzerWinner) {
+    if (role === 'host' && activeRoom?.status === 'active' && activeRoom?.timeLeft > 0 && !activeRoom?.buzzerWinner && !activeRoom?.timerPaused) {
       interval = setInterval(async () => {
         const newTime = activeRoom.timeLeft - 1;
         await updateDoc(doc(db, 'rooms', currentRoomCode), { timeLeft: newTime });
       }, 1000);
     }
     return () => clearInterval(interval);
-  }, [role, activeRoom?.status, activeRoom?.timeLeft, activeRoom?.buzzerWinner]);
+  }, [role, activeRoom?.status, activeRoom?.timeLeft, activeRoom?.buzzerWinner, activeRoom?.timerPaused]);
 
   const createRoom = async (questions, allowJokers = true) => {
     const code = generateRoomCode();
@@ -831,8 +985,49 @@ export default function App() {
         score: newScore, 
         corrected: true, 
         wasCorrect: finalPoints > 0,
-        currentAwardedPoints: finalPoints
+        currentAwardedPoints: finalPoints,
+        [`awarded.${activeRoom.currentQuestionIndex}`]: finalPoints // merken, damit "Zurück" keine Punkte doppelt vergibt
     });
+  };
+
+  // Einen Schritt zurück – ohne neu zu werten: Fragen erscheinen wieder aufgelöst, Antworten & Punkte werden wiederhergestellt
+  const goPrev = async () => {
+    const r = activeRoom;
+    if (!r) return;
+    const roomRef = doc(db, 'rooms', currentRoomCode);
+    if (r.status === 'finished') {
+      const cur = r.questions[r.currentQuestionIndex];
+      await updateDoc(roomRef, { status: isInfoItem(cur) ? 'active' : 'revealed', podiumStep: 0 });
+      return;
+    }
+    const prevIdx = r.currentQuestionIndex - 1;
+    if (prevIdx < 0) return;
+    const pq = r.questions[prevIdx];
+    const info = isInfoItem(pq);
+    const batch = writeBatch(db);
+    for (const p of players) {
+      const awarded = p.awarded?.[prevIdx];
+      batch.update(doc(db, 'players', p.id), {
+        currentAnswer: info ? null : (p.answers?.[prevIdx] ?? null),
+        corrected: !info && awarded !== undefined,
+        wasCorrect: info || awarded === undefined ? null : awarded > 0,
+        currentAwardedPoints: awarded ?? 0,
+        isBullseye: false,
+        stepLockedIn: null
+      });
+    }
+    batch.update(roomRef, {
+      currentQuestionIndex: prevIdx,
+      status: info ? 'active' : 'revealed',
+      currentStepIndex: pq.type === 'step' ? Math.max(0, (pq.steps || []).length - 1) : 0,
+      timeLeft: 0,
+      timerPaused: false,
+      buzzerWinner: null,
+      buzzerReaction: null,
+      buzzerLockedOut: [],
+      geoStage: pq.type === 'geo' ? 'target' : null
+    });
+    await batch.commit();
   };
 
   const handleBuzzerWrongContinue = async () => {
@@ -993,6 +1188,7 @@ export default function App() {
               </h1>
           </div>
           <div className="flex items-center gap-4">
+          {(role === 'host' || role === 'beamer') && <button onClick={toggleSound} className="text-slate-400 hover:text-sky-500 transition-colors" title={soundOn ? 'Sound ausschalten' : 'Sound einschalten'}>{soundOn ? <Volume2 size={20}/> : <VolumeX size={20}/>}</button>}
           {(role === 'host' || role === 'beamer') && <button onClick={toggleFullscreen} className="text-slate-400 hover:text-sky-500 transition-colors" title="Vollbild an/aus"><Maximize size={20}/></button>}
           {role && <button onClick={() => { if(role==='host' && currentRoomCode) { if (!window.confirm('Quiz wirklich beenden? Der Raum wird für alle geschlossen.')) return; deleteRoomWithPlayers(currentRoomCode).catch(console.error); } leaveRoom(); }} className="text-slate-400 hover:text-red-500 transition-colors"><LogOut size={20}/></button>}
           </div>
@@ -1041,6 +1237,7 @@ export default function App() {
         {(role === 'host' || role === 'beamer') && activeRoom && <HostDashboard room={activeRoom} players={players} isBeamer={role === 'beamer'} onReveal={revealAnswer} onNext={async () => {
             const last = activeRoom.currentQuestionIndex >= activeRoom.questions.length -1;
             const nextIdx = activeRoom.currentQuestionIndex + 1;
+            const curQ = activeRoom.questions[activeRoom.currentQuestionIndex];
             const batch = writeBatch(db);
             for(const p of players) {
               batch.update(doc(db,'players',p.id),{currentAnswer:null, corrected:false, wasCorrect:null, currentAwardedPoints:0, isBullseye: false, stepLockedIn: null});
@@ -1053,10 +1250,14 @@ export default function App() {
               buzzerWinner: null, 
               buzzerReaction: null,
               buzzerLockedOut: [],
-              geoStage: null
+              geoStage: null,
+              timerPaused: false,
+              ...(last ? { podiumStep: 0 } : {}),
+              // Stand beim Zwischenstand merken – der nächste Zwischenstand animiert von hier aus
+              ...(curQ?.type === 'break' ? { lastRanking: getSortedTeams(players, activeRoom).map(t => ({ name: t.name, score: t.totalScore })) } : {})
             });
             await batch.commit();
-        }} onCorrect={manualCorrect} onBuzzerCorrect={handleBuzzerHost} onBuzzerWrongContinue={handleBuzzerWrongContinue} db={db}/>}
+        }} onPrev={goPrev} soundOn={soundOn} onCorrect={manualCorrect} onBuzzerCorrect={handleBuzzerHost} onBuzzerWrongContinue={handleBuzzerWrongContinue} db={db}/>}
 
         {role === 'player' && activeRoom && <PlayerDashboard room={activeRoom} player={myProfile} players={players} onAnswer={async v => {
             await updateDoc(doc(db,'players',user.uid),{
@@ -1262,7 +1463,8 @@ const QUESTION_TYPES = [
   { type: 'buzzer',     icon: '🔔', label: 'Buzzer',          desc: 'Wer zuerst drückt, darf antworten' },
   { type: 'step',       icon: '🪜', label: 'Stufen-Rätsel',   desc: 'Hinweise nacheinander – früh raten bringt mehr Punkte' },
   { type: 'geo',        icon: '🗺️', label: 'Geo-Quiz',        desc: 'Pin auf der Karte setzen, Entfernung zählt' },
-  { type: 'slide',      icon: '🖼️', label: 'Folie',           desc: 'Bild oder Text, z.B. Rundenstart oder Erklärung' },
+  { type: 'round',      icon: '🎬', label: 'Neue Runde',      desc: 'Startfolie einer Runde – gliedert deinen Ablauf' },
+  { type: 'slide',      icon: '🖼️', label: 'Folie',           desc: 'Bild oder Text, z.B. Regeln oder Erklärung' },
   { type: 'break',      icon: '⏸️', label: 'Zwischenstand',   desc: 'Zeigt allen das aktuelle Ranking' },
 ];
 const getTypeInfo = (type) => QUESTION_TYPES.find(t => t.type === type) || QUESTION_TYPES[0];
@@ -1273,7 +1475,7 @@ const withKey = (q) => (q && q._key ? q : { ...q, _key: makeKey() });
 const DEFAULT_GEO = { lat: 51.165691, lng: 10.451526 };
 
 const createItem = (type) => {
-  const base = type === 'slide' ? getSlideTemplate() : getBaseQuestionTemplate();
+  const base = isSlideLike({ type }) ? getSlideTemplate() : getBaseQuestionTemplate();
   return applyTypeDefaults({ ...base, type, _key: makeKey() }, type);
 };
 
@@ -1287,8 +1489,8 @@ const applyTypeDefaults = (q, type) => {
     n.mapStyle = n.mapStyle || 'comic';
     n.startView = n.startView || 'europe';
   }
-  if (type === 'slide' || type === 'break') { n.timer = 0; n.isJoker = false; }
-  if (type === 'slide') n.showImg = false;
+  if (isInfoItem({ type })) { n.timer = 0; n.isJoker = false; }
+  if (isSlideLike({ type })) n.showImg = false;
   if (type === 'multiple' && !(n.options && n.options.length === 4)) n.options = ['', '', '', ''];
   return n;
 };
@@ -1298,6 +1500,7 @@ const getItemTitle = (q) => {
   if (q.type === 'buzzer') return 'Buzzer-Runde';
   if (q.type === 'break') return 'Zwischenstand';
   if (q.type === 'slide') return q.imgUrl ? 'Folie' : 'Leere Folie';
+  if (q.type === 'round') return 'Neue Runde';
   return 'Neue Frage';
 };
 
@@ -1313,6 +1516,7 @@ const getWarnings = (q) => {
   if (q.type === 'step' && !(q.steps || []).some(s => (s.text || '').trim())) w.push('Noch keine Hinweise eingetragen');
   if (q.type === 'geo' && Number(q.targetLat) === DEFAULT_GEO.lat && Number(q.targetLng) === DEFAULT_GEO.lng) w.push('Ziel noch nicht gesetzt (steht auf der Standardposition)');
   if (q.type === 'slide' && !q.imgUrl && !(q.q || '').trim()) w.push('Die Folie ist noch leer');
+  if (q.type === 'round' && !(q.q || '').trim()) w.push('Name der Runde fehlt');
   if (getMediaType(q.imgUrl) === 'image' && q.imgUrl && !isFsImage(q.imgUrl) && !/^(https?:|\/|data:)/i.test(q.imgUrl)) w.push('Der Medien-Link sieht ungültig aus');
   return w;
 };
@@ -1374,6 +1578,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   const [importing, setImporting] = useState(null);
   const [dragKey, setDragKey] = useState(null);
   const [dropIndex, setDropIndex] = useState(null);
+  const [collapsed, setCollapsed] = useState({}); // zugeklappte Runden (nach _key)
 
   const quizIdRef = useRef(initialQuiz?.id || null);
   const firstRender = useRef(true);
@@ -1448,7 +1653,29 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
     setSelectedKey(items[0]._key);
   };
 
-  const addItem = (type) => { insertAfterSelected([createItem(type)]); setPicker(null); };
+  const addItem = (type) => {
+    setPicker(null);
+    if (type !== 'round') { insertAfterSelected([createItem(type)]); return; }
+    // Neue Runde: davor automatisch einen Zwischenstand einfügen, falls die vorige Runde keinen hat
+    const idx = qs.findIndex(q => q._key === selectedKey);
+    const insertAt = idx === -1 ? qs.length : idx + 1;
+    const before = qs.slice(0, insertAt);
+    const roundsBefore = before.filter(q => q.type === 'round').length;
+    const lastItem = before[before.length - 1];
+    const hasContentBefore = before.some(q => !isInfoItem(q));
+    const round = createItem('round');
+    round.q = `Runde ${roundsBefore + 1}`;
+    const items = [];
+    if (hasContentBefore && lastItem && lastItem.type !== 'break') {
+      const brk = createItem('break');
+      brk.q = roundsBefore > 0 ? `Zwischenstand nach Runde ${roundsBefore}` : 'Zwischenstand';
+      items.push(brk);
+    }
+    items.push(round);
+    setQs(prev => { const n = [...prev]; n.splice(insertAt, 0, ...items); return n; });
+    setSelectedKey(round._key);
+    if (items.length > 1) showToast('Neue Runde angelegt – mit Zwischenstand davor');
+  };
   const changeType = (type) => { if (selected) updateItem(selected._key, applyTypeDefaults(selected, type)); setPicker(null); };
 
   const duplicateItem = (key) => {
@@ -1659,20 +1886,24 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
 
           {/* Titel / Frage */}
           <div>
-            <FieldLabel>{q.type === 'slide' ? 'Titel der Folie' : q.type === 'break' ? 'Überschrift' : q.type === 'step' ? 'Kategorie / Hauptfrage' : 'Frage'}</FieldLabel>
-            <textarea rows={q.type === 'break' || q.type === 'slide' ? 1 : 2}
-              placeholder={q.type === 'break' ? 'z.B. Zwischenstand nach Runde 1' : q.type === 'slide' ? "z.B. 'Regeln Runde 2' – erscheint in der Regie-Vorschau" : q.type === 'step' ? "z.B. 'Wer bin ich?'" : q.type === 'buzzer' ? 'Frage (oder leer lassen für eine reine Buzzer-Runde)' : 'Wie lautet deine Frage?'}
+            <FieldLabel>{q.type === 'round' ? `Name der Runde ${getRoundNumber(qs, selectedIndex)}` : q.type === 'slide' ? 'Titel der Folie' : q.type === 'break' ? 'Überschrift' : q.type === 'step' ? 'Kategorie / Hauptfrage' : 'Frage'}</FieldLabel>
+            <textarea rows={isInfoItem(q) ? 1 : 2}
+              placeholder={q.type === 'round' ? 'z.B. Geografie' : q.type === 'break' ? 'z.B. Zwischenstand nach Runde 1' : q.type === 'slide' ? "z.B. 'Regeln Runde 2' – erscheint in der Regie-Vorschau" : q.type === 'step' ? "z.B. 'Wer bin ich?'" : q.type === 'buzzer' ? 'Frage (oder leer lassen für eine reine Buzzer-Runde)' : 'Wie lautet deine Frage?'}
               className="w-full bg-slate-50 p-4 rounded-2xl border border-sky-100 outline-none focus:border-[#E69F00] focus:bg-white text-xl font-bold text-slate-700 resize-none"
               value={q.q} onChange={e => updateItem(q._key, { q: e.target.value })} />
           </div>
 
+          {q.type === 'round' && (
+            <p className="text-sm text-slate-500 bg-indigo-50 rounded-xl p-4">🎬 Erscheint als große Startfolie: <b>RUNDE {getRoundNumber(qs, selectedIndex)}</b> + Name. Optional kannst du unten einen Untertitel (z.B. die Regeln) oder ein eigenes Bild hinzufügen.</p>
+          )}
+
           {/* Folie */}
-          {q.type === 'slide' && (
+          {isSlideLike(q) && (
             <div className="space-y-3">
               <ImageInput variant="large" value={q.imgUrl} onChange={v => updateItem(q._key, { imgUrl: v })} />
               {!q.imgUrl && (
                 <div>
-                  <FieldLabel>Text der Folie (ohne Bild)</FieldLabel>
+                  <FieldLabel>{q.type === 'round' ? 'Untertitel / Regeln (optional)' : 'Text der Folie (ohne Bild)'}</FieldLabel>
                   <textarea placeholder="Der Titel wird zur Überschrift, dieser Text steht darunter …" className="w-full bg-slate-50 p-3 rounded-xl border border-sky-100 text-slate-700 resize-none h-24 outline-none focus:border-[#E69F00]" value={q.note || ''} onChange={e => updateItem(q._key, { note: e.target.value })} />
                 </div>
               )}
@@ -1848,16 +2079,48 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         <div className="bg-white rounded-3xl border border-sky-100 shadow-sm lg:sticky lg:top-24">
           <div className="px-5 py-4 border-b border-sky-50 flex justify-between items-baseline">
             <h3 className="font-bold text-slate-700">Ablauf</h3>
-            <span className="text-xs text-slate-400">{questionCount} Fragen · {slideCount} Folien</span>
+            <span className="text-xs text-slate-400">{qs.filter(q => q.type === 'round').length > 0 && `${qs.filter(q => q.type === 'round').length} Runden · `}{questionCount} Fragen · {slideCount} Folien</span>
           </div>
           <div className="p-2 max-h-[60vh] overflow-y-auto" onDragOver={e => e.preventDefault()} onDrop={onDropList}>
             {qs.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Noch leer – füge unten etwas hinzu.</p>}
-            {qs.map((q, i) => {
+            {(() => {
+              // Runden-Zugehörigkeit vorab berechnen
+              let current = null;
+              const roundOf = qs.map(q => { if (q.type === 'round') current = q._key; return current; });
+              const questionsInRound = {};
+              qs.forEach((q, i) => { const r = roundOf[i]; if (r && q.type !== 'round' && !isInfoItem(q)) questionsInRound[r] = (questionsInRound[r] || 0) + 1; });
+              return qs.map((q, i) => {
               const info = getTypeInfo(q.type);
               const isSel = q._key === selected?._key;
               const warn = getWarnings(q).length > 0;
+              const inRound = roundOf[i] && q.type !== 'round';
+              if (inRound && collapsed[roundOf[i]]) return null;
+              if (q.type === 'round') {
+                const isCollapsed = !!collapsed[q._key];
+                return (
+                  <div key={q._key}>
+                    {dropIndex === i && dragKey && <div className="h-1 bg-[#E69F00] rounded-full mx-2 my-1" />}
+                    <div draggable
+                      onDragStart={e => { setDragKey(q._key); e.dataTransfer.effectAllowed = 'move'; }}
+                      onDragEnd={() => { setDragKey(null); setDropIndex(null); }}
+                      onDragOver={e => onDragOverItem(e, i)}
+                      onClick={() => setSelectedKey(q._key)}
+                      className={`group flex items-center gap-2 px-3 py-3 mt-2 rounded-xl cursor-pointer transition-colors bg-indigo-50 ${isSel ? 'ring-2 ring-[#E69F00]' : 'hover:bg-indigo-100'} ${dragKey === q._key ? 'opacity-40' : ''}`}>
+                      <button onClick={e => { e.stopPropagation(); setCollapsed(c => ({ ...c, [q._key]: !c[q._key] })); }} className="w-6 text-indigo-400 hover:text-indigo-700 font-bold" title={isCollapsed ? 'Aufklappen' : 'Zuklappen'}>{isCollapsed ? '▶' : '▼'}</button>
+                      <span className="text-lg">🎬</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[11px] font-black tracking-widest text-indigo-400">RUNDE {getRoundNumber(qs, i)}</div>
+                        <div className="text-sm font-bold text-indigo-900 truncate">{getItemTitle(q)}</div>
+                      </div>
+                      <span className="text-[11px] text-indigo-400 font-semibold">{questionsInRound[q._key] || 0} Fragen</span>
+                      {warn && <span className="text-amber-500 text-sm" title={getWarnings(q).join('\n')}>⚠️</span>}
+                      <button onClick={e => { e.stopPropagation(); deleteItem(q._key); }} className="opacity-0 group-hover:opacity-100 text-indigo-300 hover:text-red-500 p-1" title="Runden-Startfolie löschen (Fragen bleiben)"><Trash2 size={14}/></button>
+                    </div>
+                  </div>
+                );
+              }
               return (
-                <div key={q._key}>
+                <div key={q._key} className={inRound ? 'ml-4 border-l-2 border-indigo-100 pl-1' : ''}>
                   {dropIndex === i && dragKey && <div className="h-1 bg-[#E69F00] rounded-full mx-2 my-1" />}
                   <div draggable
                     onDragStart={e => { setDragKey(q._key); e.dataTransfer.effectAllowed = 'move'; }}
@@ -1884,11 +2147,13 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                   </div>
                 </div>
               );
-            })}
+            });
+            })()}
             {dropIndex === qs.length && dragKey && <div className="h-1 bg-[#E69F00] rounded-full mx-2 my-1" />}
           </div>
           <div className="p-3 border-t border-sky-50 grid grid-cols-2 gap-2">
-            <button onClick={() => setPicker({ mode: 'add' })} className="bg-[#E69F00] hover:bg-[#D49100] text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-sm"><Plus size={18}/> Hinzufügen</button>
+            <button onClick={() => setPicker({ mode: 'add' })} className="col-span-2 bg-[#E69F00] hover:bg-[#D49100] text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-sm"><Plus size={18}/> Hinzufügen</button>
+            <button onClick={() => addItem('round')} className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-3 rounded-xl font-bold flex items-center justify-center gap-2 text-sm">🎬 Runde</button>
             <button onClick={() => openSlideImport(false)} disabled={!!importing} className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-3 rounded-xl font-bold flex items-center justify-center gap-2 text-sm">
               {importing ? `${importing.done}/${importing.total} …` : <><ImageIcon size={16}/> Folien</>}
             </button>
@@ -1963,12 +2228,16 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   );
 }
 
-function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCorrect, onBuzzerWrongContinue, db, isBeamer = false }) {
+function HostDashboard({ room, players, onReveal, onNext, onPrev, soundOn = true, onCorrect, onBuzzerCorrect, onBuzzerWrongContinue, db, isBeamer = false }) {
   const q = room.questions[room.currentQuestionIndex];
   const nextQ = room.questions[room.currentQuestionIndex + 1]; 
   const isLastQuestion = room.currentQuestionIndex >= room.questions.length - 1;
   const sortedTeams = getSortedTeams(players, room);
   const geoPinsStage = q?.type === 'geo' && room.status === 'revealed' && room.geoStage === 'pins';
+  const podiumSize = getPodiumSize(sortedTeams);
+  const podiumStep = room.podiumStep ?? podiumSize; // alte Räume: alles sofort sichtbar
+  const podiumDone = podiumStep >= podiumSize;
+  const canGoBack = room.status === 'finished' || (room.status !== 'lobby' && room.currentQuestionIndex > 0);
   
   const [showBuzzerAnswer, setShowBuzzerAnswer] = useState(false);
   const [numTeams, setNumTeams] = useState(2); 
@@ -2001,15 +2270,44 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   };
   const goNext = () => runOnce(onNext);
   const revealGeoTarget = () => runOnce(() => updateDoc(doc(db, 'rooms', room.id), { geoStage: 'target' }));
+  const goPrev = () => { if (canGoBack) runOnce(onPrev); };
+  const podiumNext = () => runOnce(() => updateDoc(doc(db, 'rooms', room.id), { podiumStep: podiumStep + 1 }));
+  const togglePause = () => runOnce(() => updateDoc(doc(db, 'rooms', room.id), { timerPaused: !room.timerPaused }));
+
+  // Sounds auf Beamer / Host (über den Lautsprecher-Knopf oben ein- und ausschaltbar)
+  const soundPrev = useRef(null);
+  useEffect(() => {
+    const cur = { idx: room.currentQuestionIndex, status: room.status, timeLeft: room.timeLeft, geoStage: room.geoStage, buzzer: room.buzzerWinner, podium: room.podiumStep || 0 };
+    const prev = soundPrev.current;
+    soundPrev.current = cur;
+    if (!prev || !soundOn) return;
+    const sameQ = prev.idx === cur.idx;
+    if (sameQ && cur.status === 'active' && prev.timeLeft !== cur.timeLeft) {
+      if (cur.timeLeft > 0 && cur.timeLeft <= 5) Sound.tick();
+      if (prev.timeLeft > 0 && cur.timeLeft === 0) Sound.timeUp();
+    }
+    if (sameQ && prev.status === 'active' && cur.status === 'revealed') { if (q?.type === 'geo') Sound.pop(); else Sound.reveal(); }
+    if (sameQ && prev.geoStage === 'pins' && cur.geoStage === 'target') Sound.reveal();
+    if (!prev.buzzer && cur.buzzer) Sound.buzzer();
+    if (!sameQ && cur.status === 'active' && q?.type === 'break') Sound.swoosh();
+    if (prev.status !== 'finished' && cur.status === 'finished') Sound.pop();
+    if (cur.status === 'finished' && cur.podium > prev.podium) Sound.fanfare(cur.podium >= podiumSize);
+  }, [room.currentQuestionIndex, room.status, room.timeLeft, room.geoStage, room.buzzerWinner, room.podiumStep, soundOn]);
 
   // Weiterschalten per Tastatur oder Presenter-Klicker (→, Leertaste, Bild↓, Enter)
   useEffect(() => {
-    if (isBeamer || room.status === 'lobby' || room.status === 'finished' || !q) return;
+    if (isBeamer || room.status === 'lobby' || !q) return;
     const onKey = (e) => {
       if (e.repeat) return;
       const tag = (e.target?.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable) return;
+      if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); goPrev(); return; }
+      if ((e.key === 'p' || e.key === 'P') && room.status === 'active' && q.timer > 0) { e.preventDefault(); togglePause(); return; }
       if (!['ArrowRight', 'PageDown', ' ', 'Enter'].includes(e.key)) return;
+      if (room.status === 'finished') {
+        if (!podiumDone) { e.preventDefault(); podiumNext(); }
+        return;
+      }
       if (geoPinsStage) {
         e.preventDefault(); revealGeoTarget();
       } else if (isInfoItem(q) || room.status === 'revealed') {
@@ -2162,6 +2460,14 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
       )}
 
       <div className="fixed bottom-6 right-6 bg-white px-6 py-3 rounded-2xl shadow-2xl border border-sky-100 flex items-center gap-3 z-50">
+        {canGoBack && (
+          <>
+            <button onClick={goPrev} className="p-2 rounded-xl text-slate-400 hover:bg-slate-50 hover:text-slate-700 flex items-center gap-1 text-sm font-bold" title="Einen Schritt zurück (← oder Bild↑)">
+              <ChevronLeft size={22}/> Zurück
+            </button>
+            <div className="w-px h-8 bg-sky-100 mx-1"></div>
+          </>
+        )}
         <button onClick={toggleSimulator} className={`p-2 rounded-xl transition-colors ${showSimulator ? 'bg-sky-100 text-sky-600' : 'text-slate-400 hover:bg-slate-50'}`} title="Handy-Simulator öffnen/schließen">
             <Smartphone size={24}/>
         </button>
@@ -2216,31 +2522,40 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
   );
   
   if (room.status === 'finished') return (
-    <div className="space-y-8 max-w-4xl mx-auto py-10 text-slate-700 relative h-full">
-      <Confetti />
-      <h2 className="text-center text-6xl text-[#E69F00] font-bold mb-12 relative z-10">🏆 Endstand</h2>
-      {sortedTeams.map((t,i)=>(
-        <div key={t.name} className={`p-8 rounded-3xl flex justify-between items-center border ${i===0?'bg-yellow-50 border-[#E69F00] shadow-md relative z-10':'bg-white border-sky-50 shadow-sm relative z-10'}`}>
-          <div>
-              <span className="text-3xl font-bold block">{i+1}. {t.name}</span>
-              <span className="text-sm text-slate-400">{t.players.map(p => p.name).join(", ")}</span>
-          </div>
-          <span className="font-mono text-4xl bg-slate-50 px-6 py-2 rounded-xl text-[#E69F00]">{t.totalScore}</span>
+    <div className="space-y-10 max-w-5xl mx-auto py-6 text-slate-700 relative h-full">
+      {podiumDone && <Confetti />}
+      <h2 className="text-center text-6xl text-[#E69F00] font-bold relative z-10">🏆 Siegerehrung</h2>
+      <div className="relative z-10"><Podium teams={sortedTeams} step={podiumStep} /></div>
+
+      {sortedTeams.length > 3 && (
+        <div className="bg-white rounded-3xl border border-sky-100 shadow-sm p-6 space-y-2 relative z-10 max-w-3xl mx-auto">
+          {sortedTeams.slice(3).map((t, i) => (
+            <div key={t.name} className="flex justify-between items-center px-4 py-2 rounded-xl bg-slate-50">
+              <span className="font-bold text-slate-600">{i + 4}. {t.name}</span>
+              <span className="font-mono font-bold text-[#E69F00]">{fmtPts(t.totalScore)}</span>
+            </div>
+          ))}
         </div>
-      ))}
-      {!isBeamer && <button onClick={()=>downloadCSV(players,room)} className="w-full bg-white border border-sky-100 py-6 rounded-3xl flex items-center justify-center gap-4 text-2xl font-bold mt-12 shadow-md text-slate-700 relative z-10"><Download size={32}/> Excel-Export (CSV)</button>}
+      )}
+
+      {!isBeamer && !podiumDone && (
+        <button onClick={podiumNext} className="w-full max-w-3xl mx-auto block bg-[#E69F00] text-white py-6 rounded-3xl text-3xl font-bold shadow-xl hover:scale-[1.02] transition-all relative z-10">
+          {podiumSize - podiumStep === 1 ? '🥁 Und der Sieger ist …' : podiumSize - podiumStep === 2 ? '🥈 Platz 2 enthüllen' : '🥉 Platz 3 enthüllen'}
+        </button>
+      )}
+      {!isBeamer && podiumDone && <button onClick={()=>downloadCSV(players,room)} className="w-full bg-white border border-sky-100 py-6 rounded-3xl flex items-center justify-center gap-4 text-2xl font-bold mt-12 shadow-md text-slate-700 relative z-10"><Download size={32}/> Excel-Export (CSV)</button>}
 
       {!isBeamer && renderSimulatorAndButton()}
     </div>
   );
 
-  if (q.type === 'slide') {
+  if (isSlideLike(q)) {
     return (
       <div className={`fixed inset-0 z-[60] bg-black flex items-center justify-center select-none ${!isBeamer ? 'cursor-pointer' : ''}`} onClick={() => { if (!isBeamer) goNext(); }}>
         {q.imgUrl ? (
           <QuizImage src={q.imgUrl} className="w-full h-full object-contain" placeholderClassName="text-white/40 text-2xl animate-pulse" />
         ) : (
-          <TextSlide q={q} />
+          <TextSlide key={room.currentQuestionIndex} q={q} kicker={q.type === 'round' ? `RUNDE ${getRoundNumber(room.questions, room.currentQuestionIndex)}` : null} />
         )}
 
         <button onClick={(e) => { e.stopPropagation(); toggleFullscreen(); }} className="absolute top-4 right-4 bg-white/10 hover:bg-white/30 text-white p-3 rounded-xl opacity-30 hover:opacity-100 transition-opacity" title="Vollbild an/aus">
@@ -2249,8 +2564,9 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
         {!isBeamer && (
           <div onClick={(e) => e.stopPropagation()} className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 bg-slate-900/80 text-white pl-5 pr-3 py-3 rounded-2xl shadow-2xl opacity-40 hover:opacity-100 transition-opacity cursor-default">
+            {canGoBack && <button onClick={goPrev} className="p-2 rounded-xl text-slate-300 hover:bg-white/10" title="Zurück"><ChevronLeft size={20}/></button>}
             <span className="font-mono text-sm text-[#E69F00] font-bold">{room.id}</span>
-            <span className="text-xs text-slate-300 max-w-xs truncate">🔜 {nextQ ? (nextQ.q || (nextQ.type === 'slide' ? 'Folie' : nextQ.type === 'break' ? 'Zwischenstand' : 'Frage')) : 'Endstand'}</span>
+            <span className="text-xs text-slate-300 max-w-xs truncate">🔜 {nextQ ? (nextQ.q || getTypeInfo(nextQ.type).label) : 'Siegerehrung'}</span>
             <button onClick={goNext} className="bg-emerald-500 hover:bg-emerald-600 px-6 py-3 rounded-xl font-bold flex items-center gap-2">
               {isLastQuestion ? 'Ergebnisse' : 'Weiter'} <ChevronRight size={20}/>
             </button>
@@ -2267,14 +2583,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         
         <div className="bg-white p-8 rounded-3xl border border-sky-100 shadow-xl mb-8">
             <h3 className="text-2xl font-bold mb-6 text-slate-600 text-center">Aktuelles Ranking</h3>
-            <div className="space-y-4">
-              {sortedTeams.map((t, i) => (
-                <div key={t.name} className={`flex justify-between items-center p-4 rounded-xl border ${i===0 ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-sky-50'}`}>
-                  <span className="text-2xl font-bold text-slate-700">{i+1}. {t.name}</span>
-                  <span className="font-mono text-3xl font-bold text-[#E69F00]">{t.totalScore}</span>
-                </div>
-              ))}
-            </div>
+            <AnimatedRanking key={room.currentQuestionIndex} teams={sortedTeams} previous={room.lastRanking} />
         </div>
 
         {!isBeamer ? (
@@ -2348,7 +2657,13 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                        </div>
                      );
                  })()}
-                 {q.type !== 'buzzer' && q.type !== 'step' && <div className="flex items-center gap-3 text-[#E69F00] font-mono text-4xl font-bold bg-slate-50 px-6 py-2 rounded-full border border-sky-50"><Clock size={32}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</div>}
+                 {q.type !== 'buzzer' && q.type !== 'step' && (
+                   <button onClick={() => { if (!isBeamer && room.status === 'active' && q.timer > 0) togglePause(); }} disabled={isBeamer || room.status !== 'active' || !(q.timer > 0)}
+                     className={`flex items-center gap-3 font-mono text-4xl font-bold px-6 py-2 rounded-full border transition-colors ${room.timerPaused && room.status === 'active' ? 'bg-sky-50 border-sky-300 text-sky-600' : 'bg-slate-50 border-sky-50 text-[#E69F00]'} ${!isBeamer && q.timer > 0 && room.status === 'active' ? 'hover:border-[#E69F00] cursor-pointer' : 'cursor-default'}`}
+                     title={!isBeamer && q.timer > 0 ? 'Klicken (oder Taste P) zum Pausieren / Fortsetzen' : undefined}>
+                     {room.timerPaused && room.status === 'active' ? <Pause size={32}/> : <Clock size={32}/>} {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}
+                   </button>
+                 )}
                  {q.type === 'buzzer' && <div className="flex items-center gap-3 text-red-500 font-bold uppercase text-2xl bg-red-50 px-6 py-2 rounded-full text-red-600 animate-pulse"><Bell size={28}/> Buzzer aktiv</div>}
                </div>
             </div>
@@ -2586,10 +2901,10 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               <div className="bg-slate-800 p-6 rounded-3xl mb-4 text-white shadow-inner flex items-center justify-between border-l-4 border-sky-400">
                   <div>
                       <span className="text-sky-400 font-bold text-xs uppercase tracking-widest block mb-1">🔜 Regie-Vorschau: Nächste Frage</span>
-                      <p className="font-medium text-lg truncate max-w-xl">{nextQ.q || (nextQ.type === 'break' ? '⏸️ Pause / Zwischenstand' : nextQ.type === 'slide' ? '🖼️ Folie' : '---')}</p>
+                      <p className="font-medium text-lg truncate max-w-xl">{nextQ.q || `${getTypeInfo(nextQ.type).icon} ${getTypeInfo(nextQ.type).label}`}</p>
                   </div>
                   <div className="text-right ml-4">
-                      <span className="bg-slate-700 text-slate-300 px-3 py-1 rounded-lg text-xs font-bold uppercase block mb-1">{nextQ.type === 'slide' ? 'Folie' : nextQ.type}</span>
+                      <span className="bg-slate-700 text-slate-300 px-3 py-1 rounded-lg text-xs font-bold uppercase block mb-1">{getTypeInfo(nextQ.type).label}</span>
                       {nextQ.isJoker && <span className="text-amber-400 text-xs font-bold uppercase">🌟 Joker</span>}
                   </div>
               </div>
@@ -2647,7 +2962,6 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 }
 
 function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }) {
-  if (!player) return null;
   const q = room.questions[room.currentQuestionIndex];
   
   const [v, setV] = useState(q.type === 'geo' ? null : '');
@@ -2658,6 +2972,20 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
     setV(q.type === 'geo' ? null : '');
     setQStartTime(Date.now()); 
   }, [room.currentQuestionIndex, q.type]);
+
+  // Vibration: neue Frage, Ergebnis
+  useEffect(() => {
+    if (room.status === 'active' && !isInfoItem(q)) vibrate(60);
+  }, [room.currentQuestionIndex]);
+  useEffect(() => {
+    if (!player || room.status !== 'revealed') return;
+    const needsGrading = ['text', 'step', 'geo'].includes(q.type);
+    if (needsGrading && !player.corrected) return;
+    if (player.wasCorrect === true) vibrate([80, 60, 140]);
+    else if (player.wasCorrect === false) vibrate(250);
+  }, [player?.wasCorrect, player?.corrected, room.status]);
+
+  if (!player) return null;
   
   const hasAnswered = player.currentAnswer !== null && player.currentAnswer !== undefined && player.currentAnswer !== "";
   const timeIsUp = q.timer > 0 && room.timeLeft === 0 && room.status === 'active';
@@ -2671,6 +2999,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
         audio.play().catch(e => console.log("Sound konnte nicht abgespielt werden:", e));
     } catch(err) {}
     const reactionTimeMs = Date.now() - qStartTime;
+    vibrate(120);
     onBuzz(reactionTimeMs);
   };
 
@@ -2687,6 +3016,17 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
     const myTeam = sortedTeams.find(t => t.name === myTeamId);
     const myRank = sortedTeams.findIndex(t => t.name === myTeamId) + 1;
     
+    const podiumStepP = room.podiumStep ?? getPodiumSize(sortedTeams);
+    if (myRank > 0 && !isPlaceRevealed(myRank, sortedTeams.length, podiumStepP)) {
+      return (
+        <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700">
+          <div className="text-6xl mb-6 animate-bounce">🥁</div>
+          <h2 className="text-2xl font-bold mb-2">Siegerehrung läuft!</h2>
+          <p className="text-slate-500 px-6">Schau nach vorne – gleich wird enthüllt, wo ihr gelandet seid …</p>
+        </div>
+      );
+    }
+
     return (
       <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700 relative overflow-hidden">
         {myRank <= 3 && <Confetti />} 
@@ -2708,10 +3048,17 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
     );
   }
   
-  if (q.type === 'slide') {
+  if (isSlideLike(q)) {
     return (
       <div className="text-center py-10 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-md mx-auto text-slate-700 px-4">
-        {q.showImg && q.imgUrl ? (
+        {q.type === 'round' && !(q.showImg && q.imgUrl) ? (
+          <div className="py-8">
+            <div className="text-5xl mb-4">🎬</div>
+            <div className="text-sm font-black tracking-[0.3em] text-sky-500 mb-2">RUNDE {getRoundNumber(room.questions, room.currentQuestionIndex)}</div>
+            <h2 className="text-3xl font-bold text-[#E69F00]">{q.q}</h2>
+            <p className="text-slate-500 mt-4">Gleich geht's los …</p>
+          </div>
+        ) : q.showImg && q.imgUrl ? (
           <QuizImage src={q.imgUrl} className="w-full max-h-[65vh] object-contain rounded-xl bg-slate-50" placeholderClassName="h-48 flex items-center justify-center text-slate-300 animate-pulse" />
         ) : q.showImg && q.q ? (
           <div className="py-6">
@@ -2876,7 +3223,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
       {q.timer > 0 && room.status === 'active' && !timeIsUp && (
         <div className="flex justify-center my-4">
            <div className={`flex items-center gap-3 px-8 py-3 rounded-full border-4 shadow-lg font-mono text-4xl font-bold transition-all duration-300 ${room.timeLeft <= 5 ? 'bg-red-50 border-red-500 text-red-600 animate-pulse scale-110' : 'bg-white border-sky-100 text-[#E69F00]'}`}>
-              <Clock size={36}/> {room.timeLeft}s
+              {room.timerPaused ? <Pause size={36}/> : <Clock size={36}/>} {room.timeLeft}s
            </div>
         </div>
       )}
@@ -3015,7 +3362,9 @@ function ObserverDashboard({ room, players }) {
         
         <div className="mt-6 space-y-4 relative z-10 px-4">
             <h3 className="font-bold text-slate-400 uppercase tracking-widest text-sm mb-2">Top 3 Teams</h3>
-            {sortedTeams.slice(0, 3).map((t, i) => (
+            {sortedTeams.slice(0, 3).map((t, i) => !isPlaceRevealed(i + 1, sortedTeams.length, room.podiumStep ?? 3) ? (
+                <div key={t.name} className="flex justify-center items-center p-3 rounded-xl border border-dashed border-sky-200 text-slate-400 font-bold animate-pulse">🥁 Platz {i + 1} …</div>
+            ) : (
                 <div key={t.name} className={`flex justify-between items-center p-3 rounded-xl border ${i===0 ? 'bg-yellow-50 border-[#E69F00]' : 'bg-slate-50 border-sky-50'}`}>
                     <span className="font-bold">{i+1}. {t.name}</span>
                     <span className="text-[#E69F00] font-bold">{t.totalScore} Pkt</span>
@@ -3026,9 +3375,10 @@ function ObserverDashboard({ room, players }) {
     );
   }
 
-  if (q.type === 'slide') {
+  if (isSlideLike(q)) {
     return (
       <div className="text-center py-10 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-md mx-auto text-slate-700 px-4">
+        {q.type === 'round' && <div className="text-sm font-black tracking-[0.3em] text-sky-500 mb-3">🎬 RUNDE {getRoundNumber(room.questions, room.currentQuestionIndex)}</div>}
         {q.imgUrl ? (
           <QuizImage src={q.imgUrl} className="w-full max-h-[65vh] object-contain rounded-xl bg-slate-50" placeholderClassName="h-48 flex items-center justify-center text-slate-300 animate-pulse" />
         ) : (
