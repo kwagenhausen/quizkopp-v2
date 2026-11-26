@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Folder, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload, Smartphone, ArrowUp, ArrowDown, ChevronLeft } from 'lucide-react';
+import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Folder, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload, Smartphone, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Maximize, X } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
 
 // --- KARTEN IMPORTE (REINES NATIVES LEAFLET!) ---
 import L from 'leaflet';
@@ -225,8 +225,223 @@ const Confetti = () => {
   );
 };
 
+// --- BILDER: EINFÜGEN, VERKLEINERN & IN FIRESTORE SPEICHERN ---
+// Eingefügte Bilder werden im Browser verkleinert und als eigener Eintrag in der
+// Sammlung "quiz_images" gespeichert. In der Frage steht nur ein kurzer Verweis
+// ("fsimg:<id>"), damit das Quiz selbst klein bleibt (Firestore-Limit: 1 MB pro Eintrag).
+const FS_IMG_PREFIX = 'fsimg:';
+const MAX_IMG_CHARS = 900000; // Sicherheitsabstand zum 1-MB-Limit
+const isFsImage = (url) => typeof url === 'string' && url.startsWith(FS_IMG_PREFIX);
+
+const imagePromiseCache = new Map(); // id -> Promise<dataUrl|null>
+const imageDataCache = new Map();    // id -> dataUrl (bereits geladen)
+
+const fetchFsImage = (ref) => {
+  const id = ref.slice(FS_IMG_PREFIX.length);
+  if (!imagePromiseCache.has(id)) {
+    const p = getDoc(doc(db, 'quiz_images', id))
+      .then(snap => {
+        const data = snap.exists() ? snap.data().data : null;
+        if (data) imageDataCache.set(id, data);
+        return data;
+      })
+      .catch(err => {
+        console.error('Bild konnte nicht geladen werden:', err);
+        imagePromiseCache.delete(id);
+        return null;
+      });
+    imagePromiseCache.set(id, p);
+  }
+  return imagePromiseCache.get(id);
+};
+
+const preloadImages = (questions) => {
+  (questions || []).forEach(qq => { if (isFsImage(qq?.imgUrl)) fetchFsImage(qq.imgUrl); });
+};
+
+const loadImageElement = (blob) => new Promise((resolve, reject) => {
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+  img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Die Datei ist kein lesbares Bild.')); };
+  img.src = url;
+});
+
+const compressImage = async (blob, maxW = 1920, maxH = 1080) => {
+  const img = await loadImageElement(blob);
+  let scale = Math.min(1, maxW / img.naturalWidth, maxH / img.naturalHeight);
+  const qualities = [0.85, 0.75, 0.65, 0.5];
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const w = Math.max(1, Math.round(img.naturalWidth * scale));
+    const h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    for (const quality of qualities) {
+      let data = canvas.toDataURL('image/webp', quality);
+      if (!data.startsWith('data:image/webp')) data = canvas.toDataURL('image/jpeg', quality); // ältere Browser ohne WebP
+      if (data.length <= MAX_IMG_CHARS) return { data, width: w, height: h };
+    }
+    scale *= 0.75;
+  }
+  throw new Error('Das Bild ist auch verkleinert noch zu groß.');
+};
+
+const uploadQuizImage = async (blob) => {
+  const { data, width, height } = await compressImage(blob);
+  const ref = doc(collection(db, 'quiz_images'));
+  await setDoc(ref, { data, width, height, createdAt: Date.now() });
+  imageDataCache.set(ref.id, data);
+  imagePromiseCache.set(ref.id, Promise.resolve(data));
+  return FS_IMG_PREFIX + ref.id;
+};
+
+// Holt ein Bild aus der Zwischenablage – außer es wurde eindeutig ein Link kopiert.
+const getImageFromClipboard = (e) => {
+  const cd = e.clipboardData;
+  if (!cd) return null;
+  const text = (cd.getData('text/plain') || '').trim();
+  if (/^(https?:\/\/|\/)\S+$/i.test(text)) return null;
+  for (const item of Array.from(cd.items || [])) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) return item.getAsFile();
+  }
+  return null;
+};
+
+const useResolvedImage = (src) => {
+  const initial = isFsImage(src) ? (imageDataCache.get(src.slice(FS_IMG_PREFIX.length)) || null) : src;
+  const [resolved, setResolved] = useState(initial);
+  useEffect(() => {
+    if (!isFsImage(src)) { setResolved(src); return; }
+    const cached = imageDataCache.get(src.slice(FS_IMG_PREFIX.length));
+    if (cached) { setResolved(cached); return; }
+    let alive = true;
+    setResolved(null);
+    fetchFsImage(src).then(d => { if (alive) setResolved(d); });
+    return () => { alive = false; };
+  }, [src]);
+  return resolved;
+};
+
+const QuizImage = ({ src, className = '', placeholderClassName, alt = '' }) => {
+  const resolved = useResolvedImage(src);
+  if (!resolved) {
+    return <div className={placeholderClassName || `${className} flex items-center justify-center text-slate-300 text-sm animate-pulse`}>Bild lädt …</div>;
+  }
+  return <img src={resolved} className={className} alt={alt} />;
+};
+
+// Bildfeld für den Editor: Link eintippen, Bild mit Strg+V einfügen, hineinziehen oder hochladen.
+function ImageInput({ value, onChange, variant = 'compact' }) {
+  const [busy, setBusy] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef(null);
+
+  const handleBlob = async (blob) => {
+    setBusy(true);
+    try {
+      const ref = await uploadQuizImage(blob);
+      onChange(ref);
+    } catch (err) {
+      console.error(err);
+      alert('Das Bild konnte nicht gespeichert werden: ' + err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onPaste = (e) => {
+    const file = getImageFromClipboard(e);
+    if (file) { e.preventDefault(); handleBlob(file); }
+  };
+  const onDrop = (e) => {
+    setDragOver(false);
+    const file = Array.from(e.dataTransfer?.files || []).find(f => f.type.startsWith('image/'));
+    if (file) { e.preventDefault(); handleBlob(file); }
+  };
+  const dragProps = {
+    onDragOver: (e) => { e.preventDefault(); setDragOver(true); },
+    onDragLeave: () => setDragOver(false),
+    onDrop,
+  };
+  const fileInput = (
+    <input type="file" accept="image/*" ref={fileRef} className="hidden"
+      onChange={e => { const f = e.target.files[0]; if (f) handleBlob(f); e.target.value = ''; }} />
+  );
+
+  if (variant === 'large') {
+    return (
+      <div {...dragProps} className={`w-full rounded-2xl border-2 border-dashed p-4 transition-colors ${dragOver ? 'border-sky-500 bg-sky-100' : 'border-sky-200 bg-white'}`}>
+        {fileInput}
+        {busy ? (
+          <div className="h-48 flex items-center justify-center text-sky-600 font-bold animate-pulse">Bild wird verkleinert & gespeichert …</div>
+        ) : value ? (
+          <div className="relative">
+            <QuizImage src={value} className="w-full max-h-[360px] object-contain rounded-xl bg-slate-900" placeholderClassName="h-48 flex items-center justify-center text-slate-300 animate-pulse" />
+            <button onClick={() => onChange('')} className="absolute top-2 right-2 bg-white/90 hover:bg-red-500 hover:text-white text-red-500 p-2 rounded-lg shadow transition-colors" title="Bild entfernen"><X size={18}/></button>
+          </div>
+        ) : (
+          <div className="h-32 flex flex-col items-center justify-center text-slate-400 text-sm gap-1">
+            <ImageIcon size={32} className="text-sky-200"/>
+            <span>Noch kein Bild – Folie aus PowerPoint kopieren und unten einfügen</span>
+          </div>
+        )}
+        <div className="flex gap-2 mt-3">
+          <input value="" onChange={() => {}} onPaste={onPaste} disabled={busy}
+            placeholder={value ? 'Zum Ersetzen hier klicken und Strg+V (Mac: ⌘+V) drücken …' : 'Hier klicken und Strg+V (Mac: ⌘+V) drücken – oder Bild hierher ziehen'}
+            className="flex-1 bg-sky-50 p-3 rounded-xl border border-sky-100 text-sm outline-none focus:border-sky-400 focus:bg-white cursor-pointer" />
+          <button onClick={() => fileRef.current?.click()} disabled={busy} className="bg-white px-4 rounded-xl border border-sky-200 text-sky-700 font-semibold text-sm hover:bg-sky-50 transition-colors flex items-center gap-2"><Upload size={16}/> Datei</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div {...dragProps} className={`flex-1 min-w-[200px] flex items-center gap-2 rounded ${dragOver ? 'ring-2 ring-sky-400' : ''}`}>
+      {fileInput}
+      {isFsImage(value) ? (
+        <div className="flex-1 flex items-center gap-2 bg-emerald-50 border border-emerald-100 p-1 pr-2 rounded text-xs text-emerald-700">
+          <QuizImage src={value} className="h-8 w-12 object-cover rounded" placeholderClassName="h-8 w-12 rounded bg-emerald-100 animate-pulse" />
+          <span className="font-bold">Eingefügtes Bild</span>
+          <button onClick={() => onChange('')} className="ml-auto p-1 text-red-400 hover:text-red-600" title="Bild entfernen"><X size={14}/></button>
+        </div>
+      ) : (
+        <input disabled={busy} onPaste={onPaste}
+          placeholder={busy ? 'Bild wird gespeichert …' : 'Bild / YouTube / MP3 URL – oder Bild mit Strg+V einfügen'}
+          className="flex-1 bg-slate-50 p-2 rounded border border-sky-50 text-xs"
+          value={value || ''} onChange={e => onChange(e.target.value)} />
+      )}
+      <button onClick={() => fileRef.current?.click()} disabled={busy} className="p-2 bg-white border border-sky-100 rounded text-sky-600 hover:bg-sky-50" title="Bild vom Computer hochladen"><ImageIcon size={16}/></button>
+    </div>
+  );
+}
+
+// --- HELFER: FOLIEN & NUMMERIERUNG ---
+const isInfoItem = (q) => q?.type === 'break' || q?.type === 'slide';
+const getQuestionNumber = (questions, idx) => questions.slice(0, idx + 1).filter(q => !isInfoItem(q)).length;
+const getQuestionTotal = (questions) => questions.filter(q => !isInfoItem(q)).length;
+
+const toggleFullscreen = () => {
+  try {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
+    else document.exitFullscreen?.();
+  } catch (e) { console.log('Vollbild nicht möglich:', e); }
+};
+
+// Reine Text-Folie (wenn kein Bild eingefügt ist)
+const TextSlide = ({ q }) => (
+  <div className="w-full h-full bg-gradient-to-br from-sky-600 to-indigo-900 flex flex-col items-center justify-center text-center p-16 text-white">
+    <h2 className="text-6xl lg:text-8xl font-black mb-10 leading-tight">{q.q}</h2>
+    {q.note && <p className="text-3xl lg:text-4xl font-medium whitespace-pre-line max-w-5xl opacity-90 leading-relaxed">{q.note}</p>}
+  </div>
+);
+
 const getMediaType = (url) => {
   if (!url) return 'none';
+  if (isFsImage(url) || url.startsWith('data:image')) return 'image';
   const lowerUrl = url.toLowerCase();
   if (lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be')) return 'youtube';
   if (lowerUrl.endsWith('.mp3') || lowerUrl.endsWith('.wav') || lowerUrl.endsWith('.m4a') || lowerUrl.endsWith('.ogg')) return 'audio';
@@ -278,7 +493,7 @@ const downloadCSV = (players, room) => {
   const headers = ["Team-Platz", "Team", "Team-Punkte Gesamt", "Spieler", "Spieler-Punkte (ohne Schätzen)"];
   
   room.questions.forEach((q, i) => {
-      headers.push(q.type === 'break' ? `Pause: ${q.q.replace(/,/g, "")}` : `F${i+1}: ${q.q.replace(/,/g, "")}`);
+      headers.push(q.type === 'break' ? `Pause: ${q.q.replace(/,/g, "")}` : q.type === 'slide' ? `Folie: ${(q.q || '').replace(/,/g, "")}` : `F${i+1}: ${q.q.replace(/,/g, "")}`);
   });
   
   const rows = players.map(p => {
@@ -289,7 +504,7 @@ const downloadCSV = (players, room) => {
     const row = [teamRank, tId, myTeam.totalScore, p.name, p.score];
     room.questions.forEach((q, qi) => {
       const a = p.answers?.[qi];
-      if (q.type === 'break') row.push("---");
+      if (isInfoItem(q)) row.push("---");
       else if (q.type === 'multiple' && a !== undefined && a !== "") row.push(q.options[a]?.replace(/,/g, "") || "---");
       else if (q.type === 'buzzer') row.push(a ? "Gebuzzert & Richtig" : "---");
       else if (q.type === 'geo' && a?.lat) row.push(`${a.lat.toFixed(4)} / ${a.lng.toFixed(4)}`);
@@ -322,6 +537,15 @@ const getBaseQuestionTemplate = () => ({
     steps: [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}],
     targetLat: 51.165691, 
     targetLng: 10.451526
+});
+
+const getSlideTemplate = () => ({
+    ...getBaseQuestionTemplate(),
+    type: 'slide',
+    showImg: false,
+    showAnswers: false,
+    timer: 0,
+    isJoker: false
 });
 
 // --- HAUPT-APP ---
@@ -545,7 +769,10 @@ export default function App() {
                   {role === 'observer' && <span className="text-slate-300 font-normal ml-2">| Zuschauer</span>}
               </h1>
           </div>
+          <div className="flex items-center gap-4">
+          {(role === 'host' || role === 'beamer') && <button onClick={toggleFullscreen} className="text-slate-400 hover:text-sky-500 transition-colors" title="Vollbild an/aus"><Maximize size={20}/></button>}
           {role && <button onClick={() => { if(role==='host') deleteDoc(doc(db,'rooms',currentRoomCode)); setRole(null); setCurrentRoomCode(''); }} className="text-slate-400 hover:text-red-500 transition-colors"><LogOut size={20}/></button>}
+          </div>
         </div>
       </header>
 
@@ -795,7 +1022,48 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   
   const fileInputRef = useRef(null);
 
-  const update = (qIndex, f, v) => { const n=[...qs]; n[qIndex][f]=v; setQs(n); };
+  const update = (qIndex, f, v) => setQs(prev => prev.map((q, i) => i === qIndex ? { ...q, [f]: v } : q));
+
+  // --- Folien-Import (mehrere Bilder auf einmal, z.B. aus PowerPoint exportiert) ---
+  const slideImportRef = useRef(null);
+  const slideImportTarget = useRef(null);
+  const [importing, setImporting] = useState(null);
+
+  const openSlideImport = (afterIndex = null) => {
+    slideImportTarget.current = afterIndex;
+    slideImportRef.current?.click();
+  };
+
+  const handleSlideImport = async (e) => {
+    const files = Array.from(e.target.files || [])
+      .filter(f => f.type.startsWith('image/'))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+    e.target.value = '';
+    if (files.length === 0) return;
+    const target = slideImportTarget.current;
+    const newSlides = [];
+    let failed = 0;
+    setImporting({ done: 0, total: files.length });
+    for (let i = 0; i < files.length; i++) {
+      try {
+        const ref = await uploadQuizImage(files[i]);
+        newSlides.push({ ...getSlideTemplate(), imgUrl: ref, q: files[i].name.replace(/\.[^.]+$/, '') });
+      } catch (err) {
+        console.error(err);
+        failed++;
+      }
+      setImporting({ done: i + 1, total: files.length });
+    }
+    setImporting(null);
+    setQs(prev => {
+      const isEmptyStart = prev.length === 1 && !prev[0].q && !prev[0].imgUrl && prev[0].type === 'multiple';
+      if (target === null && isEmptyStart) return newSlides;
+      const n = [...prev];
+      n.splice(target === null ? n.length : target + 1, 0, ...newSlides);
+      return n;
+    });
+    if (failed > 0) alert(`${failed} Bild(er) konnten nicht gespeichert werden.`);
+  };
   
   const moveQUp = (index) => {
     if (index === 0) return;
@@ -879,7 +1147,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         if (cols.length < 2) continue; 
 
         const type = cols[0].toLowerCase();
-        if (!['multiple', 'text', 'estimation', 'buzzer', 'break'].includes(type)) continue;
+        if (!['multiple', 'text', 'estimation', 'buzzer', 'break', 'slide'].includes(type)) continue;
 
         const parsedQ = getBaseQuestionTemplate();
         parsedQ.type = type;
@@ -921,6 +1189,21 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         </div>
       </div>
 
+      <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-2xl flex flex-wrap gap-4 items-center justify-between shadow-inner mb-8">
+        <div>
+            <p className="text-sm font-bold text-slate-600 mb-1">🖼️ Folien aus PowerPoint übernehmen</p>
+            <p className="text-xs text-slate-500">In PowerPoint: Datei → Exportieren → PNG → „Alle Folien“. Dann hier alle Bilder auf einmal auswählen.</p>
+        </div>
+        <input type="file" accept="image/*" multiple ref={slideImportRef} onChange={handleSlideImport} className="hidden" />
+        {importing ? (
+            <span className="text-sm font-bold text-indigo-600 animate-pulse">Folien werden gespeichert … {importing.done}/{importing.total}</span>
+        ) : (
+            <button onClick={() => openSlideImport(null)} className="bg-white px-4 py-2 rounded-xl border border-indigo-200 text-indigo-700 font-semibold text-sm hover:bg-indigo-100 transition-colors flex items-center gap-2 shadow-sm">
+                <ImageIcon size={16} /> Folien hinzufügen (ans Ende)
+            </button>
+        )}
+      </div>
+
       <div className="flex flex-col sm:flex-row gap-4 items-start justify-between bg-white p-6 rounded-3xl border border-sky-100 shadow-sm">
         <div className="w-full space-y-4">
           
@@ -956,13 +1239,14 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
         <div key={qIndex} className="bg-white p-6 rounded-3xl border border-sky-100 shadow-md space-y-4">
           
           <div className="flex flex-col md:flex-row gap-4">
-            <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : q.type === 'step' ? "Kategorie / Hauptfrage (z.B. 'Wer bin ich?')..." : "Frage (oder leer für reine Buzzer-Runde)..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50 outline-none focus:border-sky-200 font-bold" value={q.q} onChange={e=>update(qIndex,'q',e.target.value)}/>
+            <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : q.type === 'slide' ? "Titel der Folie (z.B. 'Regeln Runde 2') – für dich in der Regie-Vorschau" : q.type === 'step' ? "Kategorie / Hauptfrage (z.B. 'Wer bin ich?')..." : "Frage (oder leer für reine Buzzer-Runde)..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50 outline-none focus:border-sky-200 font-bold" value={q.q} onChange={e=>update(qIndex,'q',e.target.value)}/>
             
             <div className="flex items-center gap-2">
                <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700 h-full outline-none focus:border-sky-200 font-bold" value={q.type} onChange={e=> {
                   const val = e.target.value;
                   const n = [...qs];
                   n[qIndex] = { ...n[qIndex], type: val };
+                  if (val === 'slide') n[qIndex] = { ...n[qIndex], timer: 0, isJoker: false, showImg: false };
                   if (val === 'step' && !n[qIndex].steps) n[qIndex].steps = [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}];
                   if (val === 'geo') {
                       n[qIndex].targetLat = n[qIndex].targetLat ?? 51.165691;
@@ -977,6 +1261,7 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                  <option value="step">Stufen-Rätsel (Hinweise)</option>
                  <option value="geo">Geo-Quiz (Karte)</option>
                  <option value="break">⏸️ Pause / Zwischenstand</option>
+                 <option value="slide">🖼️ Folie (Präsentation)</option>
                </select>
                
                <div className="flex gap-1 border-l border-sky-100 pl-2">
@@ -986,14 +1271,28 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
 
                <div className="flex gap-1 border-l border-sky-100 pl-2">
                  <button onClick={() => insertQAfter(qIndex)} className="p-2 bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white rounded border border-emerald-100 transition-colors" title="Neue Frage danach einfügen"><Plus size={18}/></button>
+                 <button onClick={() => openSlideImport(qIndex)} disabled={!!importing} className="p-2 bg-indigo-50 text-indigo-500 hover:bg-indigo-500 hover:text-white rounded border border-indigo-100 transition-colors" title="Folien-Bilder danach einfügen"><ImageIcon size={18}/></button>
                  <button onClick={() => removeQ(qIndex)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Frage löschen"><Trash2 size={18}/></button>
                </div>
             </div>
           </div>
           
-          {q.type !== 'break' && (
+          {q.type === 'slide' && (
+            <div className="space-y-3 bg-indigo-50/40 p-4 rounded-2xl border border-indigo-100">
+              <ImageInput variant="large" value={q.imgUrl} onChange={v => update(qIndex, 'imgUrl', v)} />
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                <input type="checkbox" checked={!!q.showImg} onChange={e => update(qIndex, 'showImg', e.target.checked)} />
+                <label>📱 Folie auch auf den Handys zeigen (sonst steht dort „Schau nach vorne“)</label>
+              </div>
+              {!q.imgUrl && (
+                <textarea placeholder="Ohne Bild wird eine Text-Folie gezeigt: Der Titel oben wird zur Überschrift, dieser Text darunter …" className="w-full bg-white p-3 rounded-xl border border-indigo-100 text-slate-700 text-sm resize-none h-24 outline-none focus:border-indigo-300" value={q.note || ''} onChange={e => update(qIndex, 'note', e.target.value)} />
+              )}
+            </div>
+          )}
+
+          {!isInfoItem(q) && (
             <div className="flex gap-4 items-center flex-wrap">
-              <input placeholder="Bild / YouTube / MP3 URL (optional)" className="flex-1 min-w-[200px] bg-slate-50 p-2 rounded border border-sky-50 text-xs" value={q.imgUrl} onChange={e=>update(qIndex,'imgUrl',e.target.value)}/>
+              <ImageInput value={q.imgUrl} onChange={v => update(qIndex, 'imgUrl', v)} />
               <div className="flex items-center gap-2 text-xs text-slate-400"><label>Auf Handy?</label><input type="checkbox" checked={q.showImg} onChange={e=>update(qIndex,'showImg',e.target.checked)}/></div>
               
               {allowJokers && (
@@ -1065,11 +1364,11 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
             <div key={oi} className={`flex gap-2 p-2 rounded border ${q.correctIndex == oi ? 'border-emerald-200 bg-emerald-50' : 'bg-slate-50 border-sky-50'}`}><input type="radio" checked={q.correctIndex==oi} onChange={()=>update(qIndex,'correctIndex',oi)}/><input className="bg-transparent w-full text-slate-700" value={o} onChange={e=>{const no=[...q.options];no[oi]=e.target.value;update(qIndex,'options',no)}}/></div>
           ))}</div>}
           
-          {q.type !== 'multiple' && q.type !== 'break' && q.type !== 'geo' && (
+          {q.type !== 'multiple' && !isInfoItem(q) && q.type !== 'geo' && (
             <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.correctValue} onChange={e=>update(qIndex,'correctValue',e.target.value)} placeholder={q.type === 'estimation' ? "Korrekte Zahl (oder leer lassen für Live-Eingabe nach dem Wiegen...)" : "Korrekte Lösung (für dich zur Info)..."} />
           )}
 
-          {q.type !== 'break' && (
+          {!isInfoItem(q) && (
             <textarea placeholder="Optional: Hintergrundinfo / Fun Fact zur Auflösung..." className="w-full bg-slate-50 p-3 rounded-xl border border-sky-50 text-slate-700 text-sm mt-4 resize-none h-20 outline-none focus:border-sky-200" value={q.note || ''} onChange={e=>update(qIndex,'note',e.target.value)} />
           )}
         </div>
@@ -1102,6 +1401,40 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     setShowBuzzerAnswer(false);
     setLiveEstValue(q?.correctValue || '');
   }, [room.currentQuestionIndex, q?.correctValue]);
+
+  // Bilder vorladen: in der Lobby das ganze Quiz, danach immer die nächsten Folien/Fragen
+  useEffect(() => {
+    if (room.status === 'lobby') preloadImages(room.questions);
+    else preloadImages(room.questions.slice(room.currentQuestionIndex, room.currentQuestionIndex + 4));
+  }, [room.status, room.currentQuestionIndex]);
+
+  // Schutz gegen Doppelklick / doppelten Tastendruck
+  const actionLock = useRef(false);
+  const runOnce = async (fn) => {
+    if (actionLock.current) return;
+    actionLock.current = true;
+    try { await fn(); } catch (err) { console.error(err); }
+    finally { setTimeout(() => { actionLock.current = false; }, 400); }
+  };
+  const goNext = () => runOnce(onNext);
+
+  // Weiterschalten per Tastatur oder Presenter-Klicker (→, Leertaste, Bild↓, Enter)
+  useEffect(() => {
+    if (isBeamer || room.status === 'lobby' || room.status === 'finished' || !q) return;
+    const onKey = (e) => {
+      if (e.repeat) return;
+      const tag = (e.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable) return;
+      if (!['ArrowRight', 'PageDown', ' ', 'Enter'].includes(e.key)) return;
+      if (isInfoItem(q) || room.status === 'revealed') {
+        e.preventDefault(); goNext();
+      } else if (room.status === 'active' && q.type !== 'buzzer') {
+        e.preventDefault(); runOnce(() => onReveal(q.type === 'estimation' ? liveEstValue : null));
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   const toggleSimulator = async () => {
     const demoId = 'demo_' + room.id;
@@ -1304,6 +1637,32 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
     </div>
   );
 
+  if (q.type === 'slide') {
+    return (
+      <div className={`fixed inset-0 z-[60] bg-black flex items-center justify-center select-none ${!isBeamer ? 'cursor-pointer' : ''}`} onClick={() => { if (!isBeamer) goNext(); }}>
+        {q.imgUrl ? (
+          <QuizImage src={q.imgUrl} className="w-full h-full object-contain" placeholderClassName="text-white/40 text-2xl animate-pulse" />
+        ) : (
+          <TextSlide q={q} />
+        )}
+
+        <button onClick={(e) => { e.stopPropagation(); toggleFullscreen(); }} className="absolute top-4 right-4 bg-white/10 hover:bg-white/30 text-white p-3 rounded-xl opacity-30 hover:opacity-100 transition-opacity" title="Vollbild an/aus">
+          <Maximize size={20}/>
+        </button>
+
+        {!isBeamer && (
+          <div onClick={(e) => e.stopPropagation()} className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 bg-slate-900/80 text-white pl-5 pr-3 py-3 rounded-2xl shadow-2xl opacity-40 hover:opacity-100 transition-opacity cursor-default">
+            <span className="font-mono text-sm text-[#E69F00] font-bold">{room.id}</span>
+            <span className="text-xs text-slate-300 max-w-xs truncate">🔜 {nextQ ? (nextQ.q || (nextQ.type === 'slide' ? 'Folie' : nextQ.type === 'break' ? 'Zwischenstand' : 'Frage')) : 'Endstand'}</span>
+            <button onClick={goNext} className="bg-emerald-500 hover:bg-emerald-600 px-6 py-3 rounded-xl font-bold flex items-center gap-2">
+              {isLastQuestion ? 'Ergebnisse' : 'Weiter'} <ChevronRight size={20}/>
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (q.type === 'break') {
     return (
       <div className="space-y-8 max-w-4xl mx-auto py-10 text-slate-700 relative h-full">
@@ -1322,7 +1681,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
         </div>
 
         {!isBeamer ? (
-            <button onClick={onNext} className="w-full bg-emerald-500 text-white px-8 py-6 rounded-3xl text-3xl font-bold shadow-xl hover:scale-[1.02] transition-all">
+            <button onClick={goNext} className="w-full bg-emerald-500 text-white px-8 py-6 rounded-3xl text-3xl font-bold shadow-xl hover:scale-[1.02] transition-all">
             {isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Runde starten'}
             </button>
         ) : (
@@ -1357,7 +1716,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
           <div className="bg-white p-8 md:p-12 rounded-3xl border border-sky-100 shadow-2xl relative flex-grow flex flex-col">
             <div className="flex justify-between items-center mb-8">
                <div className="flex flex-wrap items-center gap-3">
-                 <span className="text-lg font-bold text-slate-400 uppercase tracking-widest bg-slate-50 px-4 py-2 rounded-full border border-sky-50">Frage {room.currentQuestionIndex+1}/{room.questions.length}</span>
+                 <span className="text-lg font-bold text-slate-400 uppercase tracking-widest bg-slate-50 px-4 py-2 rounded-full border border-sky-50">Frage {getQuestionNumber(room.questions, room.currentQuestionIndex)}/{getQuestionTotal(room.questions)}</span>
                  {room.allowJokers && (
                    <span className="text-sm font-bold text-amber-600 uppercase tracking-widest bg-amber-50 px-4 py-2 rounded-full border border-amber-200 shadow-sm">
                      🌟 {room.questions.slice(room.currentQuestionIndex).filter(qu => qu.isJoker).length} Joker-Fragen übrig
@@ -1381,7 +1740,7 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               </div>
             )}
             {q.imgUrl && getMediaType(q.imgUrl) === 'image' && (
-              <img src={q.imgUrl} className="w-full max-h-[45vh] object-contain rounded-2xl mb-8 bg-slate-50 p-4 border border-sky-50"/>
+              <QuizImage src={q.imgUrl} className="w-full max-h-[45vh] object-contain rounded-2xl mb-8 bg-slate-50 p-4 border border-sky-50"/>
             )}
 
             <h2 className="text-4xl md:text-5xl lg:text-6xl font-bold mb-10 leading-tight">{q.q || (q.type === 'buzzer' ? 'Schnelles Spiel: Buzzer aktiv!' : '')}</h2>
@@ -1586,17 +1945,17 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
               <div className="bg-slate-800 p-6 rounded-3xl mb-4 text-white shadow-inner flex items-center justify-between border-l-4 border-sky-400">
                   <div>
                       <span className="text-sky-400 font-bold text-xs uppercase tracking-widest block mb-1">🔜 Regie-Vorschau: Nächste Frage</span>
-                      <p className="font-medium text-lg truncate max-w-xl">{nextQ.q || (nextQ.type === 'break' ? '⏸️ Pause / Zwischenstand' : '---')}</p>
+                      <p className="font-medium text-lg truncate max-w-xl">{nextQ.q || (nextQ.type === 'break' ? '⏸️ Pause / Zwischenstand' : nextQ.type === 'slide' ? '🖼️ Folie' : '---')}</p>
                   </div>
                   <div className="text-right ml-4">
-                      <span className="bg-slate-700 text-slate-300 px-3 py-1 rounded-lg text-xs font-bold uppercase block mb-1">{nextQ.type}</span>
+                      <span className="bg-slate-700 text-slate-300 px-3 py-1 rounded-lg text-xs font-bold uppercase block mb-1">{nextQ.type === 'slide' ? 'Folie' : nextQ.type}</span>
                       {nextQ.isJoker && <span className="text-amber-400 text-xs font-bold uppercase">🌟 Joker</span>}
                   </div>
               </div>
           )}
 
           {!isBeamer && (q.type !== 'buzzer' || room.status === 'revealed') && (
-            <button onClick={() => room.status === 'active' ? onReveal(q.type === 'estimation' ? liveEstValue : null) : onNext()} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
+            <button onClick={() => room.status === 'active' ? runOnce(() => onReveal(q.type === 'estimation' ? liveEstValue : null)) : goNext()} className={`w-full py-8 rounded-3xl font-bold text-3xl shadow-xl transition-all hover:scale-[1.02] ${room.status === 'active' ? 'bg-[#E69F00] text-white' : 'bg-emerald-500 text-white'}`}>
               {room.status === 'active' ? 'Lösung auflösen' : (isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage')}
             </button>
           )}
@@ -1708,6 +2067,27 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
     );
   }
   
+  if (q.type === 'slide') {
+    return (
+      <div className="text-center py-10 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-md mx-auto text-slate-700 px-4">
+        {q.showImg && q.imgUrl ? (
+          <QuizImage src={q.imgUrl} className="w-full max-h-[65vh] object-contain rounded-xl bg-slate-50" placeholderClassName="h-48 flex items-center justify-center text-slate-300 animate-pulse" />
+        ) : q.showImg && q.q ? (
+          <div className="py-6">
+            <h2 className="text-3xl font-bold mb-4 text-[#E69F00]">{q.q}</h2>
+            {q.note && <p className="text-lg text-slate-600 whitespace-pre-line">{q.note}</p>}
+          </div>
+        ) : (
+          <div className="py-10">
+            <div className="text-6xl mb-6">👀</div>
+            <h2 className="text-2xl font-bold mb-2 text-[#E69F00]">Schau nach vorne!</h2>
+            <p className="text-slate-500">Gleich geht's weiter …</p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (q.type === 'break') {
     const myTeamId = player.team && player.team.trim() !== "" ? player.team.trim() : player.name;
     const myTeam = sortedTeams.find(t => t.name === myTeamId);
@@ -1787,11 +2167,11 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
     return (
       <div className="max-w-md mx-auto space-y-6 text-center text-slate-700">
         <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest mb-6">
-            <span>Frage {room.currentQuestionIndex+1}</span>
+            <span>Frage {getQuestionNumber(room.questions, room.currentQuestionIndex)}</span>
             <span className="text-[#E69F00]">Persönliche Punkte: {player.score}</span>
         </div>
         
-        {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <img src={q.imgUrl} className="w-full h-40 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 mb-6"/>}
+        {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <QuizImage src={q.imgUrl} className="w-full h-40 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 mb-6"/>}
         {q.imgUrl && q.showImg && (getMediaType(q.imgUrl) === 'youtube' || getMediaType(q.imgUrl) === 'audio') && (
            <div className="w-full h-32 bg-slate-800 rounded-xl flex flex-col items-center justify-center text-sky-400 shadow-sm mb-6 border border-slate-700">
               <Play size={32} className="mb-2 opacity-50"/>
@@ -1847,7 +2227,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
   return (
     <div className="max-w-md mx-auto space-y-6 text-slate-700">
       <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
-        <span>Frage {room.currentQuestionIndex+1}</span>
+        <span>Frage {getQuestionNumber(room.questions, room.currentQuestionIndex)}</span>
         {q.isJoker && <span className="text-amber-500 font-black animate-pulse bg-amber-50 px-2 py-1 rounded">🌟 2 PUNKTE</span>}
         {q.timer === 0 && <span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> ∞</span>}
       </div>
@@ -1862,7 +2242,7 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
 
       <h2 className="text-2xl font-bold leading-tight mb-2">{q.q}</h2>
       
-      {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
+      {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <QuizImage src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
       {q.imgUrl && q.showImg && (getMediaType(q.imgUrl) === 'youtube' || getMediaType(q.imgUrl) === 'audio') && (
          <div className="w-full h-32 bg-slate-800 rounded-xl flex flex-col items-center justify-center text-sky-400 shadow-sm mb-6 border border-slate-700">
             <Play size={32} className="mb-2 opacity-50"/>
@@ -2002,6 +2382,21 @@ function ObserverDashboard({ room, players }) {
     );
   }
 
+  if (q.type === 'slide') {
+    return (
+      <div className="text-center py-10 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-md mx-auto text-slate-700 px-4">
+        {q.imgUrl ? (
+          <QuizImage src={q.imgUrl} className="w-full max-h-[65vh] object-contain rounded-xl bg-slate-50" placeholderClassName="h-48 flex items-center justify-center text-slate-300 animate-pulse" />
+        ) : (
+          <div className="py-6">
+            <h2 className="text-3xl font-bold mb-4 text-[#E69F00]">{q.q}</h2>
+            {q.note && <p className="text-lg text-slate-600 whitespace-pre-line">{q.note}</p>}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (q.type === 'break') {
     return (
       <div className="text-center py-16 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-md mx-auto text-slate-700">
@@ -2023,7 +2418,7 @@ function ObserverDashboard({ room, players }) {
   return (
     <div className="max-w-md mx-auto space-y-6 text-slate-700">
       <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
-        <span>Frage {room.currentQuestionIndex+1}</span>
+        <span>Frage {getQuestionNumber(room.questions, room.currentQuestionIndex)}</span>
         {q.isJoker && <span className="text-amber-500 font-black animate-pulse bg-amber-50 px-2 py-1 rounded">🌟 JOKER-FRAGE</span>}
         {q.timer === 0 && <span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> ∞</span>}
       </div>
@@ -2038,7 +2433,7 @@ function ObserverDashboard({ room, players }) {
 
       <h2 className="text-2xl font-bold leading-tight mb-2">{q.q || (q.type === 'buzzer' ? 'Buzzer-Runde' : '')}</h2>
 
-      {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <img src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
+      {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <QuizImage src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
       {q.imgUrl && q.showImg && (getMediaType(q.imgUrl) === 'youtube' || getMediaType(q.imgUrl) === 'audio') && (
          <div className="w-full h-32 bg-slate-800 rounded-xl flex flex-col items-center justify-center text-sky-400 shadow-sm mb-6 border border-slate-700">
             <Play size={32} className="mb-2 opacity-50"/>
