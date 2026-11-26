@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Folder, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload, Smartphone, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Maximize, X } from 'lucide-react';
+import { Play, Plus, Users, Trophy, CheckCircle, XCircle, ArrowRight, LogOut, MessageSquare, Hash, List, Save, FolderOpen, Folder, Download, Trash2, Lock, Image as ImageIcon, Clock, Bell, Edit3, Upload, Smartphone, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Maximize, X, Copy } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, deleteDoc, updateDoc, getDocs, writeBatch, query, where } from 'firebase/firestore';
 
 // --- KARTEN IMPORTE (REINES NATIVES LEAFLET!) ---
 import L from 'leaflet';
@@ -723,13 +723,52 @@ const getSlideTemplate = () => ({
     isJoker: false
 });
 
+// --- AUFRÄUMEN: alte Räume & Spieler löschen (läuft im Hintergrund, wenn ein Quiz gestartet wird) ---
+const ROOM_MAX_AGE_MS = 12 * 60 * 60 * 1000; // Räume älter als 12 Stunden gelten als beendet
+
+const deleteDocsInChunks = async (refs) => {
+  for (let i = 0; i < refs.length; i += 450) {
+    const batch = writeBatch(db);
+    refs.slice(i, i + 450).forEach(r => batch.delete(r));
+    await batch.commit();
+  }
+};
+
+const deleteRoomWithPlayers = async (roomCode) => {
+  const ps = await getDocs(query(collection(db, 'players'), where('roomCode', '==', roomCode)));
+  await deleteDocsInChunks([...ps.docs.map(d => d.ref), doc(db, 'rooms', roomCode)]);
+};
+
+const cleanupOldData = async (keepRoomCode) => {
+  try {
+    const now = Date.now();
+    const roomsSnap = await getDocs(collection(db, 'rooms'));
+    const liveRooms = new Set();
+    const oldRoomRefs = [];
+    roomsSnap.docs.forEach(d => {
+      const created = d.data().createdAt || 0;
+      if (d.id === keepRoomCode || now - created < ROOM_MAX_AGE_MS) liveRooms.add(d.id);
+      else oldRoomRefs.push(d.ref);
+    });
+    const playersSnap = await getDocs(collection(db, 'players'));
+    const orphanPlayerRefs = playersSnap.docs.filter(d => !liveRooms.has(d.data().roomCode)).map(d => d.ref);
+    await deleteDocsInChunks([...oldRoomRefs, ...orphanPlayerRefs]);
+    if (oldRoomRefs.length || orphanPlayerRefs.length) {
+      console.log(`Aufgeräumt: ${oldRoomRefs.length} alte Räume, ${orphanPlayerRefs.length} alte Spieler.`);
+    }
+  } catch (err) {
+    console.error('Aufräumen fehlgeschlagen:', err);
+  }
+};
+
 // --- HAUPT-APP ---
 export default function App() {
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null); 
   const [loading, setLoading] = useState(true);
-  const [allRooms, setAllRooms] = useState([]);
-  const [allPlayers, setAllPlayers] = useState([]);
+  const [activeRoom, setActiveRoom] = useState(null);
+  const [roomMissing, setRoomMissing] = useState(false);
+  const [roomPlayers, setRoomPlayers] = useState([]);
   const [currentRoomCode, setCurrentRoomCode] = useState('');
   const [adminAuth, setAdminAuth] = useState(false);
   
@@ -740,16 +779,23 @@ export default function App() {
     return onAuthStateChanged(auth, u => { setUser(u); setLoading(false); });
   }, []);
 
+  // Nur den aktuellen Raum und seine Spieler laden – nicht mehr alle Räume & Spieler, die es je gab
   useEffect(() => {
-    if (!user) return;
-    const unsubR = onSnapshot(collection(db, 'rooms'), s => setAllRooms(s.docs.map(d => ({id: d.id, ...d.data()}))));
-    const unsubP = onSnapshot(collection(db, 'players'), s => setAllPlayers(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    if (!user || !currentRoomCode) { setActiveRoom(null); setRoomPlayers([]); setRoomMissing(false); return; }
+    let seen = false;
+    const unsubR = onSnapshot(doc(db, 'rooms', currentRoomCode), snap => {
+      if (snap.exists()) { seen = true; setRoomMissing(false); setActiveRoom({ id: snap.id, ...snap.data() }); }
+      else { setActiveRoom(null); if (seen) setRoomMissing(true); }
+    });
+    const unsubP = onSnapshot(query(collection(db, 'players'), where('roomCode', '==', currentRoomCode)), s => setRoomPlayers(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     return () => { unsubR(); unsubP(); };
-  }, [user]);
+  }, [user, currentRoomCode]);
 
-  const activeRoom = allRooms.find(r => r.id === currentRoomCode);
-  const players = allPlayers.filter(p => p.roomCode === currentRoomCode).sort((a,b) => b.score - a.score);
-  const myProfile = allPlayers.find(p => p.id === user?.uid);
+  const players = [...roomPlayers].sort((a,b) => b.score - a.score);
+  const myProfile = roomPlayers.find(p => p.id === user?.uid);
+
+  const roomExists = async (code) => (await getDoc(doc(db, 'rooms', code))).exists();
+  const leaveRoom = () => { setRole(null); setCurrentRoomCode(''); setRoomMissing(false); };
 
   useEffect(() => {
     let interval;
@@ -769,6 +815,7 @@ export default function App() {
       timeLeft: questions[0].timer || 0, buzzerWinner: null, buzzerLockedOut: [], teamScores: {}, allowJokers: allowJokers, createdAt: Date.now()
     });
     setCurrentRoomCode(code); setRole('host');
+    cleanupOldData(code); // im Hintergrund
   };
 
   const manualCorrect = async (pId, basePointsToAward) => {
@@ -936,7 +983,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#F0F9FF] text-[#1E293B] font-sans">
       <header className="bg-white border-b border-sky-100 p-4 sticky top-0 z-10 shadow-sm">
-        <div className={(role === 'host' || role === 'beamer') ? "w-full max-w-[1920px] mx-auto px-4 flex justify-between items-center" : "max-w-4xl mx-auto flex justify-between items-center"}>
+        <div className={(role === 'host' || role === 'beamer' || role === 'setup') ? "w-full max-w-[1920px] mx-auto px-4 flex justify-between items-center" : "max-w-4xl mx-auto flex justify-between items-center"}>
           <div className="flex items-center gap-2">
               <Trophy className="text-[#E69F00]"/>
               <h1 className="text-xl font-bold italic">
@@ -947,18 +994,19 @@ export default function App() {
           </div>
           <div className="flex items-center gap-4">
           {(role === 'host' || role === 'beamer') && <button onClick={toggleFullscreen} className="text-slate-400 hover:text-sky-500 transition-colors" title="Vollbild an/aus"><Maximize size={20}/></button>}
-          {role && <button onClick={() => { if(role==='host') deleteDoc(doc(db,'rooms',currentRoomCode)); setRole(null); setCurrentRoomCode(''); }} className="text-slate-400 hover:text-red-500 transition-colors"><LogOut size={20}/></button>}
+          {role && <button onClick={() => { if(role==='host' && currentRoomCode) { if (!window.confirm('Quiz wirklich beenden? Der Raum wird für alle geschlossen.')) return; deleteRoomWithPlayers(currentRoomCode).catch(console.error); } leaveRoom(); }} className="text-slate-400 hover:text-red-500 transition-colors"><LogOut size={20}/></button>}
           </div>
         </div>
       </header>
 
-      <main className={(role === 'host' || role === 'beamer') ? "w-full max-w-[1920px] mx-auto p-4 lg:p-8 relative" : "max-w-4xl mx-auto p-4 py-8 relative"}>
-        {!role && !adminAuth && <LoginView allPlayers={allPlayers} onJoin={async (c, n, t) => {
+      <main className={(role === 'host' || role === 'beamer') ? "w-full max-w-[1920px] mx-auto p-4 lg:p-8 relative" : role === 'setup' ? "w-full max-w-7xl mx-auto p-4 lg:p-8 relative" : "max-w-4xl mx-auto p-4 py-8 relative"}>
+        {!role && !adminAuth && <LoginView onJoin={async (c, n, t) => {
             const roomCode = c.toUpperCase();
             const playerName = n.trim();
-            if(!allRooms.find(r=>r.id===roomCode)) return alert("Raum nicht gefunden!");
+            if(!(await roomExists(roomCode))) return alert("Raum nicht gefunden!");
             
-            const existingPlayer = allPlayers.find(p => p.roomCode === roomCode && p.name.toLowerCase() === playerName.toLowerCase());
+            const sameRoom = await getDocs(query(collection(db, 'players'), where('roomCode', '==', roomCode)));
+            const existingPlayer = sameRoom.docs.map(d => ({ id: d.id, ...d.data() })).find(p => (p.name || '').toLowerCase() === playerName.toLowerCase());
             
             if (existingPlayer) {
                 if (existingPlayer.id !== user.uid) {
@@ -972,13 +1020,13 @@ export default function App() {
                 await setDoc(doc(db,'players',user.uid),{name:playerName, team:t, roomCode:roomCode, score:0, currentAnswer:null, answers:{}, jokerUsed: false, jokerQuestion: null, isBullseye: false, stepLockedIn: null});
             }
             setCurrentRoomCode(roomCode); setRole('player');
-        }} onAdmin={() => setAdminAuth('login')} onJoinBeamer={(c) => {
+        }} onAdmin={() => setAdminAuth('login')} onJoinBeamer={async (c) => {
             const roomCode = c.toUpperCase();
-            if(!allRooms.find(r=>r.id===roomCode)) return alert("Raum nicht gefunden!");
+            if(!(await roomExists(roomCode))) return alert("Raum nicht gefunden!");
             setCurrentRoomCode(roomCode); setRole('beamer');
-        }} onJoinObserver={(c) => {
+        }} onJoinObserver={async (c) => {
             const roomCode = c.toUpperCase();
-            if(!allRooms.find(r=>r.id===roomCode)) return alert("Raum nicht gefunden!");
+            if(!(await roomExists(roomCode))) return alert("Raum nicht gefunden!");
             setCurrentRoomCode(roomCode); setRole('observer');
         }} />}
 
@@ -1027,22 +1075,37 @@ export default function App() {
         }}/>}
 
         {role === 'observer' && activeRoom && <ObserverDashboard room={activeRoom} players={players} />}
+
+        {(role === 'player' || role === 'beamer' || role === 'observer') && roomMissing && (
+          <div className="text-center py-16 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-md mx-auto text-slate-700">
+            <div className="text-6xl mb-6">👋</div>
+            <h2 className="text-2xl font-bold mb-2">Das Quiz wurde beendet</h2>
+            <p className="text-slate-500 mb-8">Danke fürs Mitspielen!</p>
+            <button onClick={leaveRoom} className="bg-[#E69F00] text-white px-8 py-3 rounded-xl font-bold shadow-md">Zur Startseite</button>
+          </div>
+        )}
       </main>
     </div>
   );
 }
 
-function LoginView({ allPlayers, onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
-  const [c, setC] = useState(''); 
+function LoginView({ onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
+  // Raum-Code aus dem Link übernehmen (z.B. vom QR-Code: ...?raum=AB12)
+  const [c, setC] = useState(() => {
+    try { return (new URLSearchParams(window.location.search).get('raum') || '').toUpperCase().slice(0, 4); } catch (e) { return ''; }
+  });
   const [n, setN] = useState('');
   const [t, setT] = useState(''); 
-  
-  const activeRoomCode = c.toUpperCase();
-  const existingTeams = [...new Set(
-    allPlayers
-      .filter(p => p.roomCode === activeRoomCode && p.team && p.team.trim() !== '')
-      .map(p => p.team.trim())
-  )];
+  const [existingTeams, setExistingTeams] = useState([]);
+
+  // Teams nur für den eingegebenen Raum laden
+  useEffect(() => {
+    if (c.length !== 4) { setExistingTeams([]); return; }
+    const unsub = onSnapshot(query(collection(db, 'players'), where('roomCode', '==', c.toUpperCase())), s => {
+      setExistingTeams([...new Set(s.docs.map(d => (d.data().team || '').trim()).filter(Boolean))]);
+    }, () => setExistingTeams([]));
+    return () => unsub();
+  }, [c]);
 
   return (
     <div className="max-w-md mx-auto pt-10 text-center">
@@ -1176,7 +1239,7 @@ function Library({ onSelect, onEdit, onBack, db }) {
               <div key={x.id} className="bg-white p-6 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border border-sky-50 shadow-sm hover:shadow-md transition-shadow">
                 <div>
                   <p className="font-bold text-xl text-slate-700">{x.title}</p>
-                  <p className="text-sm text-slate-400">{x.questions?.length || 0} Fragen {x.allowJokers && <span className="text-amber-500 font-bold ml-2">🌟 Joker aktiv</span>}</p>
+                  <p className="text-sm text-slate-400">{getQuestionTotal(x.questions || [])} Fragen{(x.questions || []).some(q => q.type === 'slide') && ` · ${(x.questions || []).filter(q => q.type === 'slide').length} Folien`} {x.allowJokers && <span className="text-amber-500 font-bold ml-2">🌟 Joker aktiv</span>}</p>
                 </div>
                 <div className="flex items-center gap-2 w-full sm:w-auto">
                   <button onClick={() => onEdit(x)} className="p-3 text-slate-400 hover:text-[#E69F00] bg-slate-50 rounded-lg transition-colors" title="Quiz bearbeiten"><Edit3 size={20}/></button>
@@ -1191,26 +1254,264 @@ function Library({ onSelect, onEdit, onBack, db }) {
   );
 }
 
+// --- EDITOR: TYPEN, VORLAGEN & PRÜFUNG ---
+const QUESTION_TYPES = [
+  { type: 'multiple',   icon: '🔤', label: 'Multiple Choice', desc: '4 Antworten, eine davon ist richtig' },
+  { type: 'text',       icon: '✍️', label: 'Freitext',        desc: 'Spieler tippen ihre Antwort, du bewertest' },
+  { type: 'estimation', icon: '⚖️', label: 'Schätzfrage',     desc: 'Das Team, das am nächsten dran ist, gewinnt' },
+  { type: 'buzzer',     icon: '🔔', label: 'Buzzer',          desc: 'Wer zuerst drückt, darf antworten' },
+  { type: 'step',       icon: '🪜', label: 'Stufen-Rätsel',   desc: 'Hinweise nacheinander – früh raten bringt mehr Punkte' },
+  { type: 'geo',        icon: '🗺️', label: 'Geo-Quiz',        desc: 'Pin auf der Karte setzen, Entfernung zählt' },
+  { type: 'slide',      icon: '🖼️', label: 'Folie',           desc: 'Bild oder Text, z.B. Rundenstart oder Erklärung' },
+  { type: 'break',      icon: '⏸️', label: 'Zwischenstand',   desc: 'Zeigt allen das aktuelle Ranking' },
+];
+const getTypeInfo = (type) => QUESTION_TYPES.find(t => t.type === type) || QUESTION_TYPES[0];
+
+const makeKey = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const withKey = (q) => (q && q._key ? q : { ...q, _key: makeKey() });
+
+const DEFAULT_GEO = { lat: 51.165691, lng: 10.451526 };
+
+const createItem = (type) => {
+  const base = type === 'slide' ? getSlideTemplate() : getBaseQuestionTemplate();
+  return applyTypeDefaults({ ...base, type, _key: makeKey() }, type);
+};
+
+// Sorgt dafür, dass beim Typwechsel alle nötigen Felder da sind
+const applyTypeDefaults = (q, type) => {
+  const n = { ...q, type };
+  if (type === 'step' && !(n.steps && n.steps.length)) n.steps = [{ text: '', points: 5 }, { text: '', points: 3 }, { text: '', points: 1 }];
+  if (type === 'geo') {
+    n.targetLat = n.targetLat ?? DEFAULT_GEO.lat;
+    n.targetLng = n.targetLng ?? DEFAULT_GEO.lng;
+    n.mapStyle = n.mapStyle || 'comic';
+    n.startView = n.startView || 'europe';
+  }
+  if (type === 'slide' || type === 'break') { n.timer = 0; n.isJoker = false; }
+  if (type === 'slide') n.showImg = false;
+  if (type === 'multiple' && !(n.options && n.options.length === 4)) n.options = ['', '', '', ''];
+  return n;
+};
+
+const getItemTitle = (q) => {
+  if (q.q && q.q.trim()) return q.q.trim();
+  if (q.type === 'buzzer') return 'Buzzer-Runde';
+  if (q.type === 'break') return 'Zwischenstand';
+  if (q.type === 'slide') return q.imgUrl ? 'Folie' : 'Leere Folie';
+  return 'Neue Frage';
+};
+
+const getWarnings = (q) => {
+  const w = [];
+  const needsText = ['multiple', 'text', 'estimation', 'step', 'geo'].includes(q.type);
+  if (needsText && !(q.q || '').trim()) w.push(q.type === 'step' ? 'Kategorie / Hauptfrage fehlt' : 'Fragetext fehlt');
+  if (q.type === 'multiple') {
+    const filled = (q.options || []).filter(o => (o || '').trim());
+    if (filled.length < 2) w.push('Mindestens 2 Antworten eintragen');
+    else if (!((q.options || [])[q.correctIndex] || '').trim()) w.push('Die markierte richtige Antwort ist leer');
+  }
+  if (q.type === 'step' && !(q.steps || []).some(s => (s.text || '').trim())) w.push('Noch keine Hinweise eingetragen');
+  if (q.type === 'geo' && Number(q.targetLat) === DEFAULT_GEO.lat && Number(q.targetLng) === DEFAULT_GEO.lng) w.push('Ziel noch nicht gesetzt (steht auf der Standardposition)');
+  if (q.type === 'slide' && !q.imgUrl && !(q.q || '').trim()) w.push('Die Folie ist noch leer');
+  if (getMediaType(q.imgUrl) === 'image' && q.imgUrl && !isFsImage(q.imgUrl) && !/^(https?:|\/|data:)/i.test(q.imgUrl)) w.push('Der Medien-Link sieht ungültig aus');
+  return w;
+};
+
+// Kleine Bausteine für den Editor
+const Toggle = ({ checked, onChange, label, hint }) => (
+  <label className="flex items-start gap-3 cursor-pointer select-none py-1">
+    <span className={`mt-0.5 relative inline-flex w-10 h-6 rounded-full transition-colors flex-shrink-0 ${checked ? 'bg-emerald-500' : 'bg-slate-200'}`}>
+      <input type="checkbox" className="sr-only" checked={!!checked} onChange={e => onChange(e.target.checked)} />
+      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-4' : ''}`} />
+    </span>
+    <span>
+      <span className="text-sm font-semibold text-slate-700 block">{label}</span>
+      {hint && <span className="text-xs text-slate-400">{hint}</span>}
+    </span>
+  </label>
+);
+
+const FieldLabel = ({ children }) => <label className="text-xs font-bold text-slate-400 uppercase tracking-widest block mb-2">{children}</label>;
+
+const Modal = ({ title, onClose, children, wide = false }) => (
+  <div className="fixed inset-0 z-[70] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+    <div className={`bg-white rounded-3xl shadow-2xl w-full ${wide ? 'max-w-3xl' : 'max-w-lg'} max-h-[90vh] overflow-y-auto`} onClick={e => e.stopPropagation()}>
+      <div className="flex justify-between items-center px-6 py-4 border-b border-sky-50 sticky top-0 bg-white rounded-t-3xl">
+        <h3 className="text-xl font-bold text-slate-700">{title}</h3>
+        <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-50"><X size={20}/></button>
+      </div>
+      <div className="p-6">{children}</div>
+    </div>
+  </div>
+);
+
+const TypePicker = ({ title, onPick, onClose, currentType }) => (
+  <Modal title={title} onClose={onClose} wide>
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {QUESTION_TYPES.map(t => (
+        <button key={t.type} onClick={() => onPick(t.type)}
+          className={`text-left p-4 rounded-2xl border-2 transition-all hover:-translate-y-0.5 hover:shadow-md ${t.type === currentType ? 'border-[#E69F00] bg-amber-50' : 'border-sky-100 bg-white hover:border-sky-300'}`}>
+          <div className="text-3xl mb-2">{t.icon}</div>
+          <div className="font-bold text-slate-700 text-sm">{t.label}</div>
+          <div className="text-xs text-slate-400 mt-1 leading-snug">{t.desc}</div>
+        </button>
+      ))}
+    </div>
+  </Modal>
+);
+
 function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   const [title, setTitle] = useState(initialQuiz ? initialQuiz.title : '');
   const [folder, setFolder] = useState(initialQuiz ? initialQuiz.folder || '' : '');
   const [allowJokers, setAllowJokers] = useState(initialQuiz ? initialQuiz.allowJokers !== false : true);
-  const [qs, setQs] = useState(initialQuiz ? initialQuiz.questions : [getBaseQuestionTemplate()]);
-  
+  const [qs, setQs] = useState(() => (initialQuiz && initialQuiz.questions && initialQuiz.questions.length ? initialQuiz.questions : [createItem('multiple')]).map(withKey));
+  const [selectedKey, setSelectedKey] = useState(null);
+  const [picker, setPicker] = useState(null);        // { mode: 'add' | 'change' }
+  const [showSettings, setShowSettings] = useState(false);
+  const [showMore, setShowMore] = useState(false);
+  const [toast, setToast] = useState(null);           // { msg, undo }
+  const [saveState, setSaveState] = useState(initialQuiz?.id ? 'saved' : 'idle');
+  const [importing, setImporting] = useState(null);
+  const [dragKey, setDragKey] = useState(null);
+  const [dropIndex, setDropIndex] = useState(null);
+
+  const quizIdRef = useRef(initialQuiz?.id || null);
+  const firstRender = useRef(true);
+  const saveTimer = useRef(null);
+  const toastTimer = useRef(null);
   const fileInputRef = useRef(null);
-
-  const update = (qIndex, f, v) => setQs(prev => prev.map((q, i) => i === qIndex ? { ...q, [f]: v } : q));
-
-  // --- Folien-Import (mehrere Bilder auf einmal, z.B. aus PowerPoint exportiert) ---
   const slideImportRef = useRef(null);
   const slideImportTarget = useRef(null);
-  const [importing, setImporting] = useState(null);
 
-  const openSlideImport = (afterIndex = null) => {
-    slideImportTarget.current = afterIndex;
-    slideImportRef.current?.click();
+  const selectedIndex = Math.max(0, qs.findIndex(q => q._key === selectedKey));
+  const selected = qs[selectedIndex] || null;
+
+  useEffect(() => { if (!selectedKey && qs[0]) setSelectedKey(qs[0]._key); }, [selectedKey, qs]);
+  useEffect(() => { setShowMore(false); }, [selectedKey]);
+
+  // --- Hinweise unten einblenden (ersetzt die Browser-Popups) ---
+  const showToast = (msg, undo = null) => {
+    clearTimeout(toastTimer.current);
+    setToast({ msg, undo });
+    toastTimer.current = setTimeout(() => setToast(null), undo ? 7000 : 3500);
   };
 
+  // --- Automatisch speichern ---
+  const saveNow = async (data) => {
+    const payload = data || { title, folder, allowJokers, qs };
+    if (!payload.title.trim()) { setSaveState('needsTitle'); return false; }
+    const record = { title: payload.title.trim(), folder: payload.folder.trim(), questions: payload.qs, allowJokers: payload.allowJokers };
+    if (JSON.stringify(record).length > 950000) { setSaveState('tooBig'); return false; }
+    setSaveState('saving');
+    try {
+      if (quizIdRef.current) {
+        await updateDoc(doc(db, 'quiz_templates', quizIdRef.current), record);
+      } else {
+        const ref = doc(collection(db, 'quiz_templates'));
+        quizIdRef.current = ref.id;
+        await setDoc(ref, { ...record, createdAt: Date.now() });
+      }
+      setSaveState('saved');
+      return true;
+    } catch (err) {
+      console.error(err);
+      setSaveState('error');
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    if (firstRender.current) { firstRender.current = false; return; }
+    setSaveState(title.trim() ? 'dirty' : 'needsTitle');
+    clearTimeout(saveTimer.current);
+    const snapshot = { title, folder, allowJokers, qs };
+    saveTimer.current = setTimeout(() => saveNow(snapshot), 1200);
+    return () => clearTimeout(saveTimer.current);
+  }, [title, folder, allowJokers, qs]);
+
+  const flushSave = async () => {
+    clearTimeout(saveTimer.current);
+    if (saveState === 'dirty' || saveState === 'error') await saveNow();
+  };
+
+  // --- Bearbeiten ---
+  const updateItem = (key, patch) => setQs(prev => prev.map(q => q._key === key ? { ...q, ...patch } : q));
+  const updateStep = (key, sIdx, patch) => setQs(prev => prev.map(q => q._key === key ? { ...q, steps: q.steps.map((s, i) => i === sIdx ? { ...s, ...patch } : s) } : q));
+
+  const insertAfterSelected = (items) => {
+    setQs(prev => {
+      const idx = prev.findIndex(q => q._key === selectedKey);
+      const n = [...prev];
+      n.splice(idx === -1 ? n.length : idx + 1, 0, ...items);
+      return n;
+    });
+    setSelectedKey(items[0]._key);
+  };
+
+  const addItem = (type) => { insertAfterSelected([createItem(type)]); setPicker(null); };
+  const changeType = (type) => { if (selected) updateItem(selected._key, applyTypeDefaults(selected, type)); setPicker(null); };
+
+  const duplicateItem = (key) => {
+    const src = qs.find(q => q._key === key);
+    if (!src) return;
+    const copy = { ...JSON.parse(JSON.stringify(src)), _key: makeKey() };
+    setQs(prev => { const i = prev.findIndex(q => q._key === key); const n = [...prev]; n.splice(i + 1, 0, copy); return n; });
+    setSelectedKey(copy._key);
+    showToast('Kopie eingefügt');
+  };
+
+  const deleteItem = (key) => {
+    const idx = qs.findIndex(q => q._key === key);
+    if (idx === -1) return;
+    const removed = qs[idx];
+    const next = qs.filter(q => q._key !== key);
+    setQs(next);
+    if (selectedKey === key) setSelectedKey(next[Math.min(idx, next.length - 1)]?._key || null);
+    showToast(`„${getItemTitle(removed).slice(0, 40)}“ gelöscht`, () => {
+      setQs(prev => { const n = [...prev]; n.splice(Math.min(idx, n.length), 0, removed); return n; });
+      setSelectedKey(removed._key);
+      setToast(null);
+    });
+  };
+
+  const moveItem = (key, dir) => setQs(prev => {
+    const i = prev.findIndex(q => q._key === key);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= prev.length) return prev;
+    const n = [...prev];
+    [n[i], n[j]] = [n[j], n[i]];
+    return n;
+  });
+
+  // --- Drag & Drop in der Ablaufliste ---
+  const onDragOverItem = (e, index) => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setDropIndex(e.clientY < rect.top + rect.height / 2 ? index : index + 1);
+  };
+  const onDropList = (e) => {
+    e.preventDefault();
+    if (!dragKey || dropIndex === null) { setDragKey(null); setDropIndex(null); return; }
+    setQs(prev => {
+      const from = prev.findIndex(q => q._key === dragKey);
+      if (from === -1) return prev;
+      const n = [...prev];
+      const [item] = n.splice(from, 1);
+      n.splice(dropIndex > from ? dropIndex - 1 : dropIndex, 0, item);
+      return n;
+    });
+    setDragKey(null); setDropIndex(null);
+  };
+
+  // --- Globale Aktionen (mit Rückgängig statt Rückfrage) ---
+  const applyGlobal = (field, value, label) => {
+    const before = qs;
+    setQs(qs.map(q => isInfoItem(q) ? q : { ...q, [field]: value }));
+    showToast(`${label} – für alle Fragen übernommen`, () => { setQs(before); setToast(null); });
+  };
+
+  // --- Folien-Import ---
+  const openSlideImport = (atEnd = false) => { slideImportTarget.current = atEnd ? 'end' : 'selected'; slideImportRef.current?.click(); };
   const handleSlideImport = async (e) => {
     const files = Array.from(e.target.files || [])
       .filter(f => f.type.startsWith('image/'))
@@ -1224,83 +1525,32 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
     for (let i = 0; i < files.length; i++) {
       try {
         const ref = await uploadQuizImage(files[i]);
-        newSlides.push({ ...getSlideTemplate(), imgUrl: ref, q: files[i].name.replace(/\.[^.]+$/, '') });
-      } catch (err) {
-        console.error(err);
-        failed++;
-      }
+        newSlides.push({ ...getSlideTemplate(), imgUrl: ref, q: files[i].name.replace(/\.[^.]+$/, ''), _key: makeKey() });
+      } catch (err) { console.error(err); failed++; }
       setImporting({ done: i + 1, total: files.length });
     }
     setImporting(null);
-    setQs(prev => {
-      const isEmptyStart = prev.length === 1 && !prev[0].q && !prev[0].imgUrl && prev[0].type === 'multiple';
-      if (target === null && isEmptyStart) return newSlides;
-      const n = [...prev];
-      n.splice(target === null ? n.length : target + 1, 0, ...newSlides);
-      return n;
-    });
-    if (failed > 0) alert(`${failed} Bild(er) konnten nicht gespeichert werden.`);
-  };
-  
-  const moveQUp = (index) => {
-    if (index === 0) return;
-    const n = [...qs];
-    [n[index - 1], n[index]] = [n[index], n[index - 1]];
-    setQs(n);
+    if (newSlides.length === 0) { showToast('Keine Folie konnte gespeichert werden.'); return; }
+    const isEmptyStart = qs.length === 1 && !qs[0].q && !qs[0].imgUrl && qs[0].type === 'multiple';
+    if (isEmptyStart) { setQs(newSlides); setSelectedKey(newSlides[0]._key); }
+    else if (target === 'end') { setQs(prev => [...prev, ...newSlides]); setSelectedKey(newSlides[0]._key); }
+    else insertAfterSelected(newSlides);
+    setShowSettings(false);
+    showToast(`${newSlides.length} Folie(n) eingefügt${failed ? ` – ${failed} fehlgeschlagen` : ''}`);
   };
 
-  const moveQDown = (index) => {
-    if (index === qs.length - 1) return;
-    const n = [...qs];
-    [n[index], n[index + 1]] = [n[index + 1], n[index]];
-    setQs(n);
-  };
-
-  const insertQAfter = (index) => {
-    const n = [...qs];
-    n.splice(index + 1, 0, getBaseQuestionTemplate());
-    setQs(n);
-  };
-
-  const removeQ = (index) => {
-    if (qs.length === 1) return alert("Ein Quiz braucht mindestens eine Frage!");
-    if(window.confirm("Frage wirklich löschen?")) {
-      const n = [...qs];
-      n.splice(index, 1);
-      setQs(n);
-    }
-  };
-
-  const saveToLib = async () => {
-    if(!title) return alert("Titel fehlt!");
-    const cleanFolder = folder.trim();
-    if (initialQuiz && initialQuiz.id) {
-      await updateDoc(doc(db, 'quiz_templates', initialQuiz.id), { title, folder: cleanFolder, questions: qs, allowJokers });
-      alert("Quiz erfolgreich aktualisiert!");
-    } else {
-      await setDoc(doc(collection(db,'quiz_templates')), { title, folder: cleanFolder, questions: qs, allowJokers, createdAt: Date.now() });
-      alert("Quiz neu gespeichert!");
-    }
-  };
-
-  const applyGlobal = (field, value) => {
-      const actionName = field === 'showAnswers' ? 'Antworten auf Beamer' : 'Bilder/Medien auf Handys';
-      const statusName = value ? 'AN' : 'AUS';
-      if (window.confirm(`Möchtest du die Einstellung "${actionName}" für ALLE ${qs.length} Fragen auf "${statusName}" setzen?`)) {
-          setQs(qs.map(q => ({ ...q, [field]: value })));
-      }
-  };
-
+  // --- CSV ---
   const downloadCsvTemplate = () => {
     const headers = "Typ;Frage;Option 1;Option 2;Option 3;Option 4;Lösung;Timer;Bild/Video/Audio URL;Notiz\n";
-    const example1 = "multiple;Wie hoch ist der Eiffelturm?;300m;330m;350m;400m;2;30;;Der Eiffelturm wurde 1889 zur Weltausstellung erbaut.\n";
-    const example2 = "text;Wer schrieb Faust?;-;-;-;-;Goethe;30;;\n";
-    const example3 = "estimation;Wie alt wurde die älteste Schildkröte?;-;-;-;-;188;30;;\n";
-    const example4 = "buzzer;Erkenne dieses Lied (Audio läuft über Beamer);-;-;-;-;Queen - Bohemian Rhapsody;0;/song1.mp3;\n";
-    const example5 = "break;Ende von Runde 1 - Zwischenstand!;-;-;-;-;-;0;;\n";
-    
-    const csvContent = "\uFEFF" + headers + example1 + example2 + example3 + example4 + example5;
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const rows = [
+      "multiple;Wie hoch ist der Eiffelturm?;300m;330m;350m;400m;2;30;;Der Eiffelturm wurde 1889 zur Weltausstellung erbaut.",
+      "text;Wer schrieb Faust?;-;-;-;-;Goethe;30;;",
+      "estimation;Wie alt wurde die älteste Schildkröte?;-;-;-;-;188;30;;",
+      "buzzer;Erkenne dieses Lied (Audio läuft über Beamer);-;-;-;-;Queen - Bohemian Rhapsody;0;/song1.mp3;",
+      "slide;Runde 2: Geografie;-;-;-;-;-;0;;Jetzt wird's international!",
+      "break;Ende von Runde 1 - Zwischenstand!;-;-;-;-;-;0;;",
+    ];
+    const blob = new Blob(["﻿" + headers + rows.join("\n") + "\n"], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = "Quizkopp_Vorlage.csv"; a.click();
@@ -1309,275 +1559,406 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = (event) => {
-      const text = event.target.result;
-      const lines = text.split(/\r\n|\n|\r/);
+      const lines = event.target.result.split(/\r\n|\n|\r/);
       const newQuestions = [];
-
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line) continue;
-        
         const cols = line.split(';');
-        if (cols.length < 2) continue; 
-
-        const type = cols[0].toLowerCase();
-        if (!['multiple', 'text', 'estimation', 'buzzer', 'break', 'slide'].includes(type)) continue;
-
-        const parsedQ = getBaseQuestionTemplate();
-        parsedQ.type = type;
+        if (cols.length < 2) continue;
+        const type = cols[0].toLowerCase().trim();
+        if (!QUESTION_TYPES.some(t => t.type === type)) continue;
+        const parsedQ = createItem(type);
         parsedQ.q = cols[1] || "";
-        parsedQ.options = [cols[2] || "", cols[3] || "", cols[4] || "", cols[5] || ""];
-        parsedQ.correctIndex = parseInt(cols[6]) - 1 || 0;
-        parsedQ.correctValue = cols[6] || "";
+        if (type === 'multiple') parsedQ.options = [cols[2] || "", cols[3] || "", cols[4] || "", cols[5] || ""];
+        parsedQ.correctIndex = (parseInt(cols[6]) - 1) || 0;
+        parsedQ.correctValue = cols[6] && cols[6] !== '-' ? cols[6] : "";
         parsedQ.timer = parseInt(cols[7]) || 0;
         parsedQ.imgUrl = cols[8] || "";
         parsedQ.note = cols[9] || "";
-
         newQuestions.push(parsedQ);
       }
-
-      if (newQuestions.length > 0) {
-        setQs(newQuestions);
-        alert(`${newQuestions.length} Fragen erfolgreich importiert!`);
-      } else {
-        alert("Keine gültigen Fragen gefunden. Bitte Format prüfen!");
-      }
       if (fileInputRef.current) fileInputRef.current.value = "";
+      if (newQuestions.length === 0) { showToast('Keine gültigen Fragen gefunden – bitte Format prüfen.'); return; }
+      const before = qs;
+      const isEmptyStart = qs.length === 1 && !qs[0].q && !qs[0].imgUrl && qs[0].type === 'multiple';
+      setQs(isEmptyStart ? newQuestions : [...qs, ...newQuestions]);
+      setSelectedKey(newQuestions[0]._key);
+      setShowSettings(false);
+      showToast(`${newQuestions.length} Fragen importiert`, () => { setQs(before); setToast(null); });
     };
     reader.readAsText(file, "UTF-8");
   };
 
-  return (
-    <div className="space-y-6">
-      
-      <div className="bg-sky-50 border border-sky-100 p-4 rounded-2xl flex flex-wrap gap-4 items-center justify-between shadow-inner mb-8">
-        <div>
-            <p className="text-sm font-bold text-slate-600 mb-1">Fragen per Excel/CSV importieren</p>
-            <button onClick={downloadCsvTemplate} className="text-xs text-sky-600 hover:text-sky-800 underline">Vorlage herunterladen</button>
-        </div>
-        <div className="flex gap-2">
-            <input type="file" accept=".csv" ref={fileInputRef} onChange={handleFileUpload} className="hidden" id="csv-upload" />
-            <label htmlFor="csv-upload" className="cursor-pointer bg-white px-4 py-2 rounded-xl border border-sky-200 text-sky-700 font-semibold text-sm hover:bg-sky-100 transition-colors flex items-center gap-2 shadow-sm">
-                <Upload size={16} /> CSV Hochladen
-            </label>
-        </div>
-      </div>
+  // --- Start & Zurück ---
+  const allWarnings = qs.map(q => ({ q, w: getWarnings(q) })).filter(x => x.w.length > 0);
+  const startQuiz = async () => {
+    if (qs.length === 0) return showToast('Füge zuerst mindestens ein Element hinzu.');
+    if (allWarnings.length > 0 && !window.confirm(`${allWarnings.length} Element(e) haben noch offene Hinweise (⚠️ in der Liste). Trotzdem starten?`)) return;
+    await flushSave();
+    onCreate(qs, allowJokers);
+  };
+  const goBack = async () => {
+    if (!title.trim() && qs.some(q => (q.q || '').trim() || q.imgUrl) && !window.confirm('Dein Quiz hat noch keinen Titel und wurde deshalb nicht gespeichert. Trotzdem verlassen?')) return;
+    await flushSave();
+    onBack();
+  };
 
-      <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-2xl flex flex-wrap gap-4 items-center justify-between shadow-inner mb-8">
-        <div>
-            <p className="text-sm font-bold text-slate-600 mb-1">🖼️ Folien aus PowerPoint übernehmen</p>
-            <p className="text-xs text-slate-500">In PowerPoint: Datei → Exportieren → PNG → „Alle Folien“. Dann hier alle Bilder auf einmal auswählen.</p>
-        </div>
-        <input type="file" accept="image/*" multiple ref={slideImportRef} onChange={handleSlideImport} className="hidden" />
-        {importing ? (
-            <span className="text-sm font-bold text-indigo-600 animate-pulse">Folien werden gespeichert … {importing.done}/{importing.total}</span>
-        ) : (
-            <button onClick={() => openSlideImport(null)} className="bg-white px-4 py-2 rounded-xl border border-indigo-200 text-indigo-700 font-semibold text-sm hover:bg-indigo-100 transition-colors flex items-center gap-2 shadow-sm">
-                <ImageIcon size={16} /> Folien hinzufügen (ans Ende)
-            </button>
-        )}
-      </div>
+  const questionCount = getQuestionTotal(qs);
+  const slideCount = qs.filter(q => q.type === 'slide').length;
 
-      <div className="flex flex-col sm:flex-row gap-4 items-start justify-between bg-white p-6 rounded-3xl border border-sky-100 shadow-sm">
-        <div className="w-full space-y-4">
-          
-          <div className="flex flex-col sm:flex-row gap-4 justify-between w-full">
-            <input placeholder="Quiz-Name" className="bg-transparent text-2xl font-bold border-b border-sky-200 flex-1 outline-none w-full text-slate-700" value={title} onChange={e=>setTitle(e.target.value)}/>
-            <div className="w-full sm:w-1/3 flex items-end">
-                <FolderOpen size={24} className="text-sky-300 mr-2 mb-1"/>
-                <input placeholder="Ordner (Optional)" className="bg-transparent text-lg font-medium border-b border-sky-200 outline-none text-slate-500 w-full focus:border-sky-400" value={folder} onChange={e=>setFolder(e.target.value)}/>
+  const saveLabel = {
+    idle: { text: 'Gib einen Titel ein – dann wird automatisch gespeichert', cls: 'text-slate-400' },
+    needsTitle: { text: '✏️ Titel fehlt – noch nicht gespeichert', cls: 'text-amber-600' },
+    dirty: { text: '● Änderungen …', cls: 'text-slate-400' },
+    saving: { text: '⏳ Speichert …', cls: 'text-sky-500' },
+    saved: { text: '✓ Gespeichert', cls: 'text-emerald-600' },
+    error: { text: '⚠️ Speichern fehlgeschlagen – versuche es erneut', cls: 'text-red-500' },
+    tooBig: { text: '⚠️ Quiz zu groß zum Speichern', cls: 'text-red-500' },
+  }[saveState];
+
+  // --- Detail-Bereich für das ausgewählte Element ---
+  const renderDetail = (q) => {
+    const info = getTypeInfo(q.type);
+    const warnings = getWarnings(q);
+    const isQuestion = !isInfoItem(q);
+    const supportsShowAnswers = ['multiple', 'estimation'].includes(q.type);
+    const moreBadges = [
+      q.timer > 0 && q.type !== 'buzzer' && `⏱ ${q.timer}s`,
+      allowJokers && q.isJoker && '🌟 Joker',
+      q.imgUrl && q.showImg && '📱 Medien aufs Handy',
+      supportsShowAnswers && q.showAnswers === false && '🙈 Antworten verborgen',
+    ].filter(Boolean);
+
+    return (
+      <div className="bg-white rounded-3xl border border-sky-100 shadow-md">
+        {/* Kopfzeile */}
+        <div className="flex flex-wrap items-center gap-3 px-6 py-4 border-b border-sky-50">
+          <button onClick={() => setPicker({ mode: 'change' })} className="flex items-center gap-2 bg-slate-50 hover:bg-amber-50 border border-sky-100 hover:border-[#E69F00] px-4 py-2 rounded-xl transition-colors" title="Typ ändern">
+            <span className="text-xl">{info.icon}</span>
+            <span className="font-bold text-slate-700">{info.label}</span>
+            <span className="text-xs text-slate-400 ml-1">ändern</span>
+          </button>
+          <span className="text-sm text-slate-400 font-medium">{selectedIndex + 1} von {qs.length}{isQuestion && ` · Frage ${getQuestionNumber(qs, selectedIndex)}`}</span>
+          <div className="ml-auto flex gap-1">
+            <button onClick={() => moveItem(q._key, -1)} disabled={selectedIndex === 0} className="p-2 rounded-lg text-slate-400 hover:bg-sky-50 disabled:opacity-30" title="Nach oben"><ArrowUp size={18}/></button>
+            <button onClick={() => moveItem(q._key, 1)} disabled={selectedIndex === qs.length - 1} className="p-2 rounded-lg text-slate-400 hover:bg-sky-50 disabled:opacity-30" title="Nach unten"><ArrowDown size={18}/></button>
+            <button onClick={() => duplicateItem(q._key)} className="p-2 rounded-lg text-slate-400 hover:bg-sky-50 hover:text-sky-600" title="Duplizieren"><Copy size={18}/></button>
+            <button onClick={() => deleteItem(q._key)} className="p-2 rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-500" title="Löschen"><Trash2 size={18}/></button>
+          </div>
+        </div>
+
+        <div className="p-6 space-y-6">
+          {warnings.length > 0 && (
+            <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm">
+              {warnings.map(w => <div key={w}>⚠️ {w}</div>)}
             </div>
-          </div>
-          
-          <div className="flex flex-col sm:flex-row gap-4 justify-between w-full pt-2">
-             <div className="flex items-center gap-2 text-sm font-bold text-amber-600 bg-amber-50 px-4 py-2 rounded-xl border border-amber-200 w-full sm:w-auto justify-between">
-                 <label>🌟 Joker-Modus für dieses Quiz?</label>
-                 <input type="checkbox" className="w-5 h-5 accent-amber-500 cursor-pointer" checked={allowJokers} onChange={e=>setAllowJokers(e.target.checked)}/>
-             </div>
-             <button onClick={saveToLib} className="bg-white p-3 rounded-xl border border-sky-100 shadow-sm flex items-center justify-center gap-2 text-slate-600 font-bold hover:bg-slate-50 transition-colors w-full sm:w-auto">
-                 <Save size={20} className="text-[#E69F00]"/> {initialQuiz ? 'Aktualisieren' : 'Speichern'}
-             </button>
+          )}
+
+          {/* Titel / Frage */}
+          <div>
+            <FieldLabel>{q.type === 'slide' ? 'Titel der Folie' : q.type === 'break' ? 'Überschrift' : q.type === 'step' ? 'Kategorie / Hauptfrage' : 'Frage'}</FieldLabel>
+            <textarea rows={q.type === 'break' || q.type === 'slide' ? 1 : 2}
+              placeholder={q.type === 'break' ? 'z.B. Zwischenstand nach Runde 1' : q.type === 'slide' ? "z.B. 'Regeln Runde 2' – erscheint in der Regie-Vorschau" : q.type === 'step' ? "z.B. 'Wer bin ich?'" : q.type === 'buzzer' ? 'Frage (oder leer lassen für eine reine Buzzer-Runde)' : 'Wie lautet deine Frage?'}
+              className="w-full bg-slate-50 p-4 rounded-2xl border border-sky-100 outline-none focus:border-[#E69F00] focus:bg-white text-xl font-bold text-slate-700 resize-none"
+              value={q.q} onChange={e => updateItem(q._key, { q: e.target.value })} />
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 pt-4 border-t border-sky-50">
-              <span className="text-xs font-bold text-slate-400 uppercase">Globale Aktionen:</span>
-              <button onClick={() => applyGlobal('showAnswers', true)} className="text-xs bg-slate-50 hover:bg-sky-50 text-slate-600 px-3 py-2 rounded-lg border border-slate-200 transition-colors">👁️ Alle Antworten zeigen</button>
-              <button onClick={() => applyGlobal('showAnswers', false)} className="text-xs bg-slate-50 hover:bg-red-50 text-slate-600 hover:text-red-600 px-3 py-2 rounded-lg border border-slate-200 transition-colors">🙈 Alle Antworten verbergen</button>
-              <button onClick={() => applyGlobal('showImg', true)} className="text-xs bg-slate-50 hover:bg-sky-50 text-slate-600 px-3 py-2 rounded-lg border border-slate-200 transition-colors">📱 Alle Bilder aufs Handy</button>
-              <button onClick={() => applyGlobal('showImg', false)} className="text-xs bg-slate-50 hover:bg-red-50 text-slate-600 hover:text-red-600 px-3 py-2 rounded-lg border border-slate-200 transition-colors">🚫 Keine Bilder aufs Handy</button>
-          </div>
-        </div>
-      </div>
-      
-      {qs.map((q, qIndex) => (
-        <div key={qIndex} className="bg-white p-6 rounded-3xl border border-sky-100 shadow-md space-y-4">
-          
-          <div className="flex flex-col md:flex-row gap-4">
-            <input placeholder={q.type === 'break' ? "Titel der Pause (z.B. Zwischenstand nach Runde 1)" : q.type === 'slide' ? "Titel der Folie (z.B. 'Regeln Runde 2') – für dich in der Regie-Vorschau" : q.type === 'step' ? "Kategorie / Hauptfrage (z.B. 'Wer bin ich?')..." : "Frage (oder leer für reine Buzzer-Runde)..."} className="flex-1 bg-slate-50 p-2 rounded border border-sky-50 outline-none focus:border-sky-200 font-bold" value={q.q} onChange={e=>update(qIndex,'q',e.target.value)}/>
-            
-            <div className="flex items-center gap-2">
-               <select className="bg-slate-50 p-2 rounded border border-sky-50 text-slate-700 h-full outline-none focus:border-sky-200 font-bold" value={q.type} onChange={e=> {
-                  const val = e.target.value;
-                  const n = [...qs];
-                  n[qIndex] = { ...n[qIndex], type: val };
-                  if (val === 'slide') n[qIndex] = { ...n[qIndex], timer: 0, isJoker: false, showImg: false };
-                  if (val === 'step' && !n[qIndex].steps) n[qIndex].steps = [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}];
-                  if (val === 'geo') {
-                      n[qIndex].targetLat = n[qIndex].targetLat ?? 51.165691;
-                      n[qIndex].targetLng = n[qIndex].targetLng ?? 10.451526;
-                      n[qIndex].mapStyle = n[qIndex].mapStyle || 'comic';
-                      n[qIndex].startView = n[qIndex].startView || 'europe';
-                  }
-                  setQs(n);
-               }}>
-                 <option value="multiple">Multiple Choice</option>
-                 <option value="text">Freitext</option>
-                 <option value="estimation">Schätzung</option>
-                 <option value="buzzer">Buzzer-Frage</option>
-                 <option value="step">Stufen-Rätsel (Hinweise)</option>
-                 <option value="geo">Geo-Quiz (Karte)</option>
-                 <option value="break">⏸️ Pause / Zwischenstand</option>
-                 <option value="slide">🖼️ Folie (Präsentation)</option>
-               </select>
-               
-               <div className="flex gap-1 border-l border-sky-100 pl-2">
-                 <button onClick={() => moveQUp(qIndex)} disabled={qIndex===0} className={`p-2 rounded border transition-colors ${qIndex===0 ? 'text-slate-200 bg-slate-50 border-slate-50' : 'text-slate-500 bg-white hover:bg-sky-50 border-sky-100'}`} title="Nach oben verschieben"><ArrowUp size={18}/></button>
-                 <button onClick={() => moveQDown(qIndex)} disabled={qIndex===qs.length-1} className={`p-2 rounded border transition-colors ${qIndex===qs.length-1 ? 'text-slate-200 bg-slate-50 border-slate-50' : 'text-slate-500 bg-white hover:bg-sky-50 border-sky-100'}`} title="Nach unten verschieben"><ArrowDown size={18}/></button>
-               </div>
-
-               <div className="flex gap-1 border-l border-sky-100 pl-2">
-                 <button onClick={() => insertQAfter(qIndex)} className="p-2 bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white rounded border border-emerald-100 transition-colors" title="Neue Frage danach einfügen"><Plus size={18}/></button>
-                 <button onClick={() => openSlideImport(qIndex)} disabled={!!importing} className="p-2 bg-indigo-50 text-indigo-500 hover:bg-indigo-500 hover:text-white rounded border border-indigo-100 transition-colors" title="Folien-Bilder danach einfügen"><ImageIcon size={18}/></button>
-                 <button onClick={() => removeQ(qIndex)} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded border border-red-100 transition-colors" title="Frage löschen"><Trash2 size={18}/></button>
-               </div>
-            </div>
-          </div>
-          
+          {/* Folie */}
           {q.type === 'slide' && (
-            <div className="space-y-3 bg-indigo-50/40 p-4 rounded-2xl border border-indigo-100">
-              <ImageInput variant="large" value={q.imgUrl} onChange={v => update(qIndex, 'imgUrl', v)} />
-              <div className="flex items-center gap-2 text-xs text-slate-500">
-                <input type="checkbox" checked={!!q.showImg} onChange={e => update(qIndex, 'showImg', e.target.checked)} />
-                <label>📱 Folie auch auf den Handys zeigen (sonst steht dort „Schau nach vorne“)</label>
-              </div>
+            <div className="space-y-3">
+              <ImageInput variant="large" value={q.imgUrl} onChange={v => updateItem(q._key, { imgUrl: v })} />
               {!q.imgUrl && (
-                <textarea placeholder="Ohne Bild wird eine Text-Folie gezeigt: Der Titel oben wird zur Überschrift, dieser Text darunter …" className="w-full bg-white p-3 rounded-xl border border-indigo-100 text-slate-700 text-sm resize-none h-24 outline-none focus:border-indigo-300" value={q.note || ''} onChange={e => update(qIndex, 'note', e.target.value)} />
+                <div>
+                  <FieldLabel>Text der Folie (ohne Bild)</FieldLabel>
+                  <textarea placeholder="Der Titel wird zur Überschrift, dieser Text steht darunter …" className="w-full bg-slate-50 p-3 rounded-xl border border-sky-100 text-slate-700 resize-none h-24 outline-none focus:border-[#E69F00]" value={q.note || ''} onChange={e => updateItem(q._key, { note: e.target.value })} />
+                </div>
+              )}
+              <Toggle checked={q.showImg} onChange={v => updateItem(q._key, { showImg: v })} label="📱 Folie auch auf den Handys zeigen" hint="Sonst steht dort „Schau nach vorne!“" />
+            </div>
+          )}
+
+          {q.type === 'break' && (
+            <p className="text-sm text-slate-500 bg-slate-50 rounded-xl p-4">Auf dem Beamer erscheint das aktuelle Team-Ranking, auf den Handys der eigene Platz.</p>
+          )}
+
+          {/* Medien */}
+          {isQuestion && (
+            <div>
+              <FieldLabel>Bild, Video oder Audio (optional)</FieldLabel>
+              <ImageInput value={q.imgUrl} onChange={v => updateItem(q._key, { imgUrl: v })} />
+              {q.imgUrl && getMediaType(q.imgUrl) === 'image' && (
+                <QuizImage src={q.imgUrl} className="mt-3 max-h-40 rounded-xl border border-sky-100 bg-slate-50 object-contain" placeholderClassName="mt-3 h-24 w-40 rounded-xl bg-slate-50 animate-pulse" />
               )}
             </div>
           )}
 
-          {!isInfoItem(q) && (
-            <div className="flex gap-4 items-center flex-wrap">
-              <ImageInput value={q.imgUrl} onChange={v => update(qIndex, 'imgUrl', v)} />
-              <div className="flex items-center gap-2 text-xs text-slate-400"><label>Auf Handy?</label><input type="checkbox" checked={q.showImg} onChange={e=>update(qIndex,'showImg',e.target.checked)}/></div>
-              
-              {allowJokers && (
-                <div className="flex items-center gap-2 text-xs text-amber-500 font-bold border-l border-amber-100 pl-4 ml-2 bg-amber-50 pr-2 py-1 rounded-md">
-                    <label>🌟 Joker hier erlauben?</label>
-                    <input type="checkbox" checked={q.isJoker} onChange={e=>update(qIndex,'isJoker',e.target.checked)}/>
-                </div>
-              )}
-
-              {q.type !== 'text' && q.type !== 'buzzer' && q.type !== 'step' && q.type !== 'geo' && (
-                  <div className="flex items-center gap-2 text-xs text-slate-400 border-l border-sky-100 pl-4 ml-2">
-                      <label>Antworten auf Beamer zeigen?</label>
-                      <input type="checkbox" checked={q.showAnswers !== false} onChange={e=>update(qIndex,'showAnswers',e.target.checked)}/>
-                  </div>
-              )}
-
-              {q.type !== 'buzzer' && (
-                <div className="flex items-center gap-2 ml-auto">
-                  <Clock size={16} className="text-[#E69F00]"/><input type="number" min="0" className="w-16 bg-slate-50 p-2 rounded border border-sky-50" value={q.timer} onChange={e=>update(qIndex,'timer',parseInt(e.target.value) || 0)}/>
-                </div>
-              )}
+          {/* Multiple Choice */}
+          {q.type === 'multiple' && (
+            <div>
+              <FieldLabel>Antworten – klicke auf den Buchstaben der richtigen</FieldLabel>
+              <div className="grid sm:grid-cols-2 gap-3">
+                {(q.options || []).map((o, oi) => {
+                  const isRight = Number(q.correctIndex) === oi;
+                  return (
+                    <div key={oi} className={`flex items-center gap-3 p-2 rounded-2xl border-2 transition-colors ${isRight ? 'border-emerald-400 bg-emerald-50' : 'border-sky-100 bg-slate-50'}`}>
+                      <button onClick={() => updateItem(q._key, { correctIndex: oi })} className={`w-10 h-10 rounded-xl font-black flex-shrink-0 transition-colors ${isRight ? 'bg-emerald-500 text-white' : 'bg-white text-slate-400 border border-sky-100 hover:border-emerald-400'}`} title="Als richtige Antwort markieren">
+                        {isRight ? '✓' : 'ABCD'[oi]}
+                      </button>
+                      <input className="bg-transparent w-full text-slate-700 outline-none font-medium" placeholder={`Antwort ${'ABCD'[oi]}`} value={o}
+                        onChange={e => updateItem(q._key, { options: q.options.map((x, xi) => xi === oi ? e.target.value : x) })} />
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
+          {/* Lösung */}
+          {['text', 'estimation', 'buzzer', 'step'].includes(q.type) && (
+            <div>
+              <FieldLabel>{q.type === 'estimation' ? 'Richtige Zahl' : 'Lösung (nur für dich)'}</FieldLabel>
+              <input type={q.type === 'estimation' ? 'number' : 'text'} className="w-full bg-slate-50 p-3 rounded-xl border border-sky-100 text-slate-700 outline-none focus:border-[#E69F00]"
+                value={q.correctValue} onChange={e => updateItem(q._key, { correctValue: e.target.value })}
+                placeholder={q.type === 'estimation' ? 'Leer lassen, wenn du das Ergebnis erst live einträgst (z.B. nach dem Wiegen)' : 'z.B. Goethe'} />
+            </div>
+          )}
+
+          {/* Stufen-Rätsel */}
           {q.type === 'step' && (
-            <div className="space-y-3 mt-4 bg-sky-50/50 p-6 rounded-2xl border border-sky-100 shadow-inner">
-               <div className="flex justify-between items-center mb-2">
-                   <p className="text-sm font-bold text-sky-700 uppercase tracking-widest">🪜 Hinweise & Punkte konfigurieren</p>
-               </div>
-               
-               {(q.steps || []).map((step, sIdx) => (
-                   <div key={sIdx} className="flex gap-3 items-center">
-                       <span className="font-black text-sky-300 w-6 text-right">{sIdx + 1}.</span>
-                       <input placeholder={`Hinweis ${sIdx + 1}...`} className="flex-1 p-3 rounded-xl border border-sky-100 outline-none focus:border-sky-300 shadow-sm" value={step.text} onChange={e => { const nQs=[...qs]; nQs[qIndex].steps[sIdx].text = e.target.value; setQs(nQs); }}/>
-                       <input type="number" className="w-24 p-3 rounded-xl border border-sky-100 outline-none focus:border-sky-300 shadow-sm text-center font-bold text-[#E69F00]" placeholder="Punkte" value={step.points} onChange={e => { const nQs=[...qs]; nQs[qIndex].steps[sIdx].points = Number(e.target.value); setQs(nQs); }} title="Punkte für diesen Hinweis"/>
-                       <button onClick={() => { const nQs=[...qs]; nQs[qIndex].steps.splice(sIdx, 1); setQs(nQs); }} className="text-red-400 p-3 hover:bg-red-50 rounded-xl transition-colors"><Trash2 size={20}/></button>
-                   </div>
-               ))}
-               <button onClick={() => { const nQs=[...qs]; if(!nQs[qIndex].steps) nQs[qIndex].steps = []; nQs[qIndex].steps.push({text:'', points: 1}); setQs(nQs); }} className="text-sm text-sky-600 font-bold hover:text-sky-800 transition-colors flex items-center gap-1 mt-2">
-                   <Plus size={16}/> Weiteren Hinweis hinzufügen
-               </button>
+            <div>
+              <FieldLabel>Hinweise & Punkte</FieldLabel>
+              <div className="space-y-2">
+                {(q.steps || []).map((step, sIdx) => (
+                  <div key={sIdx} className="flex gap-2 items-center">
+                    <span className="font-black text-sky-300 w-6 text-right">{sIdx + 1}.</span>
+                    <input placeholder={`Hinweis ${sIdx + 1} …`} className="flex-1 p-3 rounded-xl bg-slate-50 border border-sky-100 outline-none focus:border-[#E69F00]" value={step.text} onChange={e => updateStep(q._key, sIdx, { text: e.target.value })} />
+                    <div className="flex items-center gap-1 bg-amber-50 border border-amber-100 rounded-xl px-2">
+                      <input type="number" className="w-12 py-3 bg-transparent text-center font-bold text-[#E69F00] outline-none" value={step.points} onChange={e => updateStep(q._key, sIdx, { points: Number(e.target.value) })} title="Punkte für diesen Hinweis" />
+                      <span className="text-xs text-amber-500 font-bold pr-1">Pkt</span>
+                    </div>
+                    <button onClick={() => updateItem(q._key, { steps: q.steps.filter((_, i) => i !== sIdx) })} className="text-slate-300 p-2 hover:text-red-500 rounded-xl"><Trash2 size={18}/></button>
+                  </div>
+                ))}
+              </div>
+              <button onClick={() => updateItem(q._key, { steps: [...(q.steps || []), { text: '', points: 1 }] })} className="text-sm text-sky-600 font-bold hover:text-sky-800 flex items-center gap-1 mt-3">
+                <Plus size={16}/> Weiteren Hinweis hinzufügen
+              </button>
             </div>
           )}
-          
-          {/* NATIVE SETUP MAP (Zeigt alle Labels für den Admin) */}
+
+          {/* Geo */}
           {q.type === 'geo' && (
-             <div className="w-full mt-4 bg-sky-50/50 p-4 rounded-2xl border border-sky-100 shadow-inner">
-                <p className="text-sm font-bold text-sky-700 uppercase tracking-widest mb-2">📍 Ziel-Koordinate auf der Karte setzen</p>
-                <div className="w-full rounded-xl overflow-hidden border border-sky-200 z-0 relative" style={{ height: '300px' }}>
-                    <MapErrorBoundary>
-                        <GeoMap 
-                            lat={q.targetLat ?? 51.165} 
-                            lng={q.targetLng ?? 10.451} 
-                            isTarget={true} 
-                            hideLabels={false} 
-                            onMapClick={(p) => {
-                                const nQs=[...qs]; 
-                                nQs[qIndex] = { ...nQs[qIndex], targetLat: p.lat, targetLng: p.lng }; 
-                                setQs(nQs);
-                            }} 
-                        />
-                    </MapErrorBoundary>
+            <div className="space-y-4">
+              <div>
+                <FieldLabel>📍 Ziel auf der Karte anklicken</FieldLabel>
+                <div className="w-full rounded-2xl overflow-hidden border border-sky-200 z-0 relative" style={{ height: '320px' }}>
+                  <MapErrorBoundary>
+                    <GeoMap key={`admin-${q._key}`} lat={q.targetLat ?? DEFAULT_GEO.lat} lng={q.targetLng ?? DEFAULT_GEO.lng} isTarget={true} hideLabels={false}
+                      onMapClick={(p) => updateItem(q._key, { targetLat: p.lat, targetLng: p.lng })} />
+                  </MapErrorBoundary>
                 </div>
-                <p className="text-xs text-slate-400 mt-2">Klicke auf die Karte, um den roten Lösungs-Pin zu verschieben.</p>
-
-                <div className="flex flex-wrap gap-4 mt-4">
-                  <label className="text-xs font-bold text-slate-500 flex flex-col gap-1">
-                    Kartenstil
-                    <select className="bg-white p-2 rounded-lg border border-sky-100 text-sm font-medium text-slate-700" value={q.mapStyle || 'comic'} onChange={e => update(qIndex, 'mapStyle', e.target.value)}>
-                      {Object.entries(MAP_STYLES).map(([k, st]) => <option key={k} value={k}>{st.label}</option>)}
-                    </select>
-                  </label>
-                  <label className="text-xs font-bold text-slate-500 flex flex-col gap-1">
-                    Startausschnitt auf den Handys
-                    <select className="bg-white p-2 rounded-lg border border-sky-100 text-sm font-medium text-slate-700" value={q.startView || 'europe'} onChange={e => update(qIndex, 'startView', e.target.value)}>
-                      {Object.entries(MAP_VIEWS).map(([k, vw]) => <option key={k} value={k}>{vw.label}</option>)}
-                    </select>
-                  </label>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <FieldLabel>Kartenstil</FieldLabel>
+                  <select className="w-full bg-slate-50 p-3 rounded-xl border border-sky-100 text-slate-700 font-medium" value={q.mapStyle || 'comic'} onChange={e => updateItem(q._key, { mapStyle: e.target.value })}>
+                    {Object.entries(MAP_STYLES).map(([k, st]) => <option key={k} value={k}>{st.label}</option>)}
+                  </select>
                 </div>
-
-                <p className="text-sm font-bold text-sky-700 uppercase tracking-widest mt-6 mb-2">👀 Vorschau: So sehen es die Spieler</p>
-                <div className="w-full max-w-md rounded-xl overflow-hidden border border-sky-200 z-0 relative" style={{ height: '280px' }}>
-                    <MapErrorBoundary>
-                        <GeoMap key={`${q.mapStyle || 'comic'}-${q.startView || 'europe'}`} hideLabels={true} isTarget={false} mapStyle={q.mapStyle || 'comic'} startView={q.startView || 'europe'} />
-                    </MapErrorBoundary>
+                <div>
+                  <FieldLabel>Startausschnitt auf den Handys</FieldLabel>
+                  <select className="w-full bg-slate-50 p-3 rounded-xl border border-sky-100 text-slate-700 font-medium" value={q.startView || 'europe'} onChange={e => updateItem(q._key, { startView: e.target.value })}>
+                    {Object.entries(MAP_VIEWS).map(([k, vw]) => <option key={k} value={k}>{vw.label}</option>)}
+                  </select>
                 </div>
-             </div>
-          )}
-          
-          {q.type==='multiple' && <div className="grid grid-cols-2 gap-2">{q.options.map((o,oi)=>(
-            <div key={oi} className={`flex gap-2 p-2 rounded border ${q.correctIndex == oi ? 'border-emerald-200 bg-emerald-50' : 'bg-slate-50 border-sky-50'}`}><input type="radio" checked={q.correctIndex==oi} onChange={()=>update(qIndex,'correctIndex',oi)}/><input className="bg-transparent w-full text-slate-700" value={o} onChange={e=>{const no=[...q.options];no[oi]=e.target.value;update(qIndex,'options',no)}}/></div>
-          ))}</div>}
-          
-          {q.type !== 'multiple' && !isInfoItem(q) && q.type !== 'geo' && (
-            <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-2 rounded border border-sky-50 text-slate-700" value={q.correctValue} onChange={e=>update(qIndex,'correctValue',e.target.value)} placeholder={q.type === 'estimation' ? "Korrekte Zahl (oder leer lassen für Live-Eingabe nach dem Wiegen...)" : "Korrekte Lösung (für dich zur Info)..."} />
+              </div>
+              <div>
+                <FieldLabel>👀 Vorschau: So sehen es die Spieler</FieldLabel>
+                <div className="w-full max-w-md rounded-2xl overflow-hidden border border-sky-200 z-0 relative" style={{ height: '260px' }}>
+                  <MapErrorBoundary>
+                    <GeoMap key={`preview-${q._key}-${q.mapStyle || 'comic'}-${q.startView || 'europe'}`} hideLabels={true} isTarget={false} mapStyle={q.mapStyle || 'comic'} startView={q.startView || 'europe'} />
+                  </MapErrorBoundary>
+                </div>
+              </div>
+            </div>
           )}
 
-          {!isInfoItem(q) && (
-            <textarea placeholder="Optional: Hintergrundinfo / Fun Fact zur Auflösung..." className="w-full bg-slate-50 p-3 rounded-xl border border-sky-50 text-slate-700 text-sm mt-4 resize-none h-20 outline-none focus:border-sky-200" value={q.note || ''} onChange={e=>update(qIndex,'note',e.target.value)} />
+          {/* Fun Fact */}
+          {isQuestion && (
+            <div>
+              <FieldLabel>💡 Fun Fact zur Auflösung (optional)</FieldLabel>
+              <textarea placeholder="Wird nach dem Auflösen auf dem Beamer gezeigt …" className="w-full bg-slate-50 p-3 rounded-xl border border-sky-100 text-slate-700 text-sm resize-none h-20 outline-none focus:border-[#E69F00]" value={q.note || ''} onChange={e => updateItem(q._key, { note: e.target.value })} />
+            </div>
+          )}
+
+          {/* Mehr Optionen */}
+          {isQuestion && (
+            <div className="border border-sky-100 rounded-2xl">
+              <button onClick={() => setShowMore(!showMore)} className="w-full flex flex-wrap items-center gap-2 px-4 py-3 text-left">
+                <span className="font-bold text-slate-600">⚙️ Mehr Optionen</span>
+                {moreBadges.map(b => <span key={b} className="text-xs bg-sky-50 text-sky-700 px-2 py-1 rounded-lg font-semibold">{b}</span>)}
+                <span className="ml-auto text-slate-400 text-sm">{showMore ? '▲' : '▼'}</span>
+              </button>
+              {showMore && (
+                <div className="px-4 pb-4 space-y-2 border-t border-sky-50 pt-3">
+                  {q.type !== 'buzzer' && (
+                    <div className="flex items-center gap-3 py-1">
+                      <Clock size={18} className="text-[#E69F00]"/>
+                      <span className="text-sm font-semibold text-slate-700">Timer</span>
+                      <input type="number" min="0" className="w-20 bg-slate-50 p-2 rounded-lg border border-sky-100 text-center" value={q.timer} onChange={e => updateItem(q._key, { timer: parseInt(e.target.value) || 0 })} />
+                      <span className="text-xs text-slate-400">Sekunden (0 = ohne Zeitlimit)</span>
+                    </div>
+                  )}
+                  {allowJokers && <Toggle checked={q.isJoker} onChange={v => updateItem(q._key, { isJoker: v })} label="🌟 Joker bei dieser Frage erlauben" hint="Teams können hier ihre Punkte verdoppeln" />}
+                  {q.imgUrl && <Toggle checked={q.showImg} onChange={v => updateItem(q._key, { showImg: v })} label="📱 Bild / Medien auch auf den Handys zeigen" />}
+                  {supportsShowAnswers && <Toggle checked={q.showAnswers !== false} onChange={v => updateItem(q._key, { showAnswers: v })} label="📺 Antworten der Spieler auf dem Beamer zeigen" />}
+                </div>
+              )}
+            </div>
           )}
         </div>
-      ))}
-      <div className="flex gap-4">
-        <button onClick={()=>setQs([...qs, getBaseQuestionTemplate()])} className="flex-1 bg-white py-3 rounded-2xl border border-sky-100 font-bold shadow-sm text-slate-500">+ Frage ganz unten hinzufügen</button>
-        <button onClick={()=>onCreate(qs, allowJokers)} className="flex-1 bg-emerald-500 text-white py-3 rounded-2xl font-bold shadow-lg">Quiz starten</button>
       </div>
+    );
+  };
+
+  return (
+    <div className="space-y-6 pb-24">
+      {/* Kopfzeile */}
+      <div className="bg-white p-4 md:p-5 rounded-3xl border border-sky-100 shadow-sm flex flex-wrap items-center gap-4">
+        <button onClick={goBack} className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-50 rounded-xl" title="Zurück"><ChevronLeft size={24}/></button>
+        <div className="flex-1 min-w-[220px]">
+          <input placeholder="Wie heißt dein Quiz?" className="bg-transparent text-2xl font-bold outline-none w-full text-slate-700 placeholder:text-slate-300" value={title} onChange={e => setTitle(e.target.value)} />
+          <div className="flex flex-wrap items-center gap-3 mt-1 text-xs">
+            <span className="flex items-center gap-1 text-slate-400">
+              <FolderOpen size={14}/>
+              <input placeholder="Ordner (optional)" className="bg-transparent outline-none text-slate-500 w-36" value={folder} onChange={e => setFolder(e.target.value)} />
+            </span>
+            <span className={`font-semibold ${saveLabel.cls}`}>{saveLabel.text}</span>
+          </div>
+        </div>
+        <button onClick={() => setShowSettings(true)} className="px-4 py-3 rounded-xl border border-sky-100 text-slate-600 font-bold hover:bg-slate-50 flex items-center gap-2">⚙️ <span className="hidden sm:inline">Quiz-Einstellungen</span></button>
+        <button onClick={startQuiz} className="bg-emerald-500 hover:bg-emerald-600 text-white px-6 py-3 rounded-xl font-bold shadow-md flex items-center gap-2"><Play size={18}/> Quiz starten</button>
+      </div>
+
+      <div className="grid lg:grid-cols-[340px_1fr] gap-6 items-start">
+        {/* Ablaufliste */}
+        <div className="bg-white rounded-3xl border border-sky-100 shadow-sm lg:sticky lg:top-24">
+          <div className="px-5 py-4 border-b border-sky-50 flex justify-between items-baseline">
+            <h3 className="font-bold text-slate-700">Ablauf</h3>
+            <span className="text-xs text-slate-400">{questionCount} Fragen · {slideCount} Folien</span>
+          </div>
+          <div className="p-2 max-h-[60vh] overflow-y-auto" onDragOver={e => e.preventDefault()} onDrop={onDropList}>
+            {qs.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Noch leer – füge unten etwas hinzu.</p>}
+            {qs.map((q, i) => {
+              const info = getTypeInfo(q.type);
+              const isSel = q._key === selected?._key;
+              const warn = getWarnings(q).length > 0;
+              return (
+                <div key={q._key}>
+                  {dropIndex === i && dragKey && <div className="h-1 bg-[#E69F00] rounded-full mx-2 my-1" />}
+                  <div draggable
+                    onDragStart={e => { setDragKey(q._key); e.dataTransfer.effectAllowed = 'move'; }}
+                    onDragEnd={() => { setDragKey(null); setDropIndex(null); }}
+                    onDragOver={e => onDragOverItem(e, i)}
+                    onClick={() => setSelectedKey(q._key)}
+                    className={`group flex items-center gap-3 px-3 py-2 rounded-xl cursor-pointer transition-colors ${isSel ? 'bg-amber-50 ring-2 ring-[#E69F00]' : 'hover:bg-slate-50'} ${dragKey === q._key ? 'opacity-40' : ''} ${isInfoItem(q) ? 'bg-slate-50/60' : ''}`}>
+                    <span className="text-slate-300 cursor-grab text-xs" title="Ziehen zum Verschieben">⋮⋮</span>
+                    {q.type === 'slide' && q.imgUrl ? (
+                      <QuizImage src={q.imgUrl} className="w-12 h-8 object-cover rounded-md border border-sky-100 flex-shrink-0" placeholderClassName="w-12 h-8 rounded-md bg-slate-100 flex-shrink-0" />
+                    ) : (
+                      <span className="w-12 h-8 flex items-center justify-center rounded-md bg-slate-100 text-lg flex-shrink-0">{info.icon}</span>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-sm truncate ${isInfoItem(q) ? 'text-slate-500 italic' : 'font-semibold text-slate-700'}`}>{getItemTitle(q)}</div>
+                      <div className="text-[11px] text-slate-400 flex gap-2">
+                        <span>{isInfoItem(q) ? info.label : `Frage ${getQuestionNumber(qs, i)} · ${info.label}`}</span>
+                        {allowJokers && q.isJoker && <span>🌟</span>}
+                      </div>
+                    </div>
+                    {warn && <span className="text-amber-500 text-sm" title={getWarnings(q).join('\n')}>⚠️</span>}
+                    <button onClick={e => { e.stopPropagation(); duplicateItem(q._key); }} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-sky-600 p-1" title="Duplizieren"><Copy size={14}/></button>
+                    <button onClick={e => { e.stopPropagation(); deleteItem(q._key); }} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 p-1" title="Löschen"><Trash2 size={14}/></button>
+                  </div>
+                </div>
+              );
+            })}
+            {dropIndex === qs.length && dragKey && <div className="h-1 bg-[#E69F00] rounded-full mx-2 my-1" />}
+          </div>
+          <div className="p-3 border-t border-sky-50 grid grid-cols-2 gap-2">
+            <button onClick={() => setPicker({ mode: 'add' })} className="bg-[#E69F00] hover:bg-[#D49100] text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-sm"><Plus size={18}/> Hinzufügen</button>
+            <button onClick={() => openSlideImport(false)} disabled={!!importing} className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-3 rounded-xl font-bold flex items-center justify-center gap-2 text-sm">
+              {importing ? `${importing.done}/${importing.total} …` : <><ImageIcon size={16}/> Folien</>}
+            </button>
+          </div>
+        </div>
+
+        {/* Detail */}
+        <div>
+          {selected ? renderDetail(selected) : (
+            <div className="bg-white rounded-3xl border-2 border-dashed border-sky-200 p-16 text-center text-slate-400">
+              <div className="text-5xl mb-4">✨</div>
+              <p className="mb-6">Dein Quiz ist noch leer.</p>
+              <button onClick={() => setPicker({ mode: 'add' })} className="bg-[#E69F00] text-white px-6 py-3 rounded-xl font-bold">Erstes Element hinzufügen</button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Versteckte Datei-Eingaben */}
+      <input type="file" accept="image/*" multiple ref={slideImportRef} onChange={handleSlideImport} className="hidden" />
+      <input type="file" accept=".csv" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+
+      {picker && (
+        <TypePicker title={picker.mode === 'add' ? 'Was möchtest du hinzufügen?' : 'Typ ändern'} currentType={picker.mode === 'change' ? selected?.type : null}
+          onPick={picker.mode === 'add' ? addItem : changeType} onClose={() => setPicker(null)} />
+      )}
+
+      {showSettings && (
+        <Modal title="⚙️ Quiz-Einstellungen" onClose={() => setShowSettings(false)}>
+          <div className="space-y-6">
+            <div>
+              <Toggle checked={allowJokers} onChange={setAllowJokers} label="🌟 Joker-Modus" hint="Jedes Team darf einmal pro Quiz bei einer Joker-Frage seine Punkte verdoppeln" />
+            </div>
+
+            <div>
+              <FieldLabel>Für alle Fragen auf einmal</FieldLabel>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => applyGlobal('showAnswers', true, '👁️ Antworten zeigen')} className="text-sm bg-slate-50 hover:bg-sky-50 text-slate-600 px-3 py-3 rounded-xl border border-slate-200">👁️ Antworten zeigen</button>
+                <button onClick={() => applyGlobal('showAnswers', false, '🙈 Antworten verbergen')} className="text-sm bg-slate-50 hover:bg-sky-50 text-slate-600 px-3 py-3 rounded-xl border border-slate-200">🙈 Antworten verbergen</button>
+                <button onClick={() => applyGlobal('showImg', true, '📱 Bilder aufs Handy')} className="text-sm bg-slate-50 hover:bg-sky-50 text-slate-600 px-3 py-3 rounded-xl border border-slate-200">📱 Bilder aufs Handy</button>
+                <button onClick={() => applyGlobal('showImg', false, '🚫 Keine Bilder aufs Handy')} className="text-sm bg-slate-50 hover:bg-sky-50 text-slate-600 px-3 py-3 rounded-xl border border-slate-200">🚫 Keine Bilder aufs Handy</button>
+              </div>
+            </div>
+
+            <div>
+              <FieldLabel>🖼️ Folien aus PowerPoint</FieldLabel>
+              <p className="text-xs text-slate-500 mb-3">In PowerPoint: Datei → Exportieren → PNG → „Alle Folien“. Dann hier alle Bilder auf einmal auswählen.</p>
+              <button onClick={() => openSlideImport(true)} disabled={!!importing} className="w-full bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-3 rounded-xl font-bold text-sm">
+                {importing ? `Folien werden gespeichert … ${importing.done}/${importing.total}` : 'Folien ans Ende anhängen'}
+              </button>
+            </div>
+
+            <div>
+              <FieldLabel>📄 Fragen per Excel / CSV</FieldLabel>
+              <div className="flex gap-2">
+                <button onClick={() => fileInputRef.current?.click()} className="flex-1 bg-sky-50 hover:bg-sky-100 text-sky-700 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2"><Upload size={16}/> CSV importieren</button>
+                <button onClick={downloadCsvTemplate} className="flex-1 bg-white border border-sky-100 hover:bg-slate-50 text-slate-600 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2"><Download size={16}/> Vorlage</button>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] bg-slate-800 text-white pl-5 pr-2 py-2 rounded-2xl shadow-2xl flex items-center gap-4 max-w-[90vw]">
+          <span className="text-sm">{toast.msg}</span>
+          {toast.undo && <button onClick={toast.undo} className="bg-white/10 hover:bg-white/20 px-3 py-2 rounded-xl text-sm font-bold text-[#E69F00]">Rückgängig</button>}
+          <button onClick={() => setToast(null)} className="p-2 text-slate-400 hover:text-white"><X size={16}/></button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1793,8 +2174,19 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
 
   if (room.status === 'lobby') return (
     <div className="text-center py-20 space-y-12 relative h-full">
-      <p className="text-3xl text-slate-400 uppercase tracking-widest font-bold">Raum-Code</p>
-      <h2 className="text-[10rem] leading-none font-mono font-bold text-[#E69F00] tracking-widest">{room.id}</h2>
+      <div className="flex flex-col md:flex-row items-center justify-center gap-12">
+        <div className="bg-white p-5 rounded-3xl shadow-xl border border-sky-100">
+          <img src={`https://api.qrserver.com/v1/create-qr-code/?size=360x360&margin=8&data=${encodeURIComponent(`${window.location.origin}/?raum=${room.id}`)}`}
+               alt="QR-Code zum Beitreten" className="w-56 h-56 md:w-64 md:h-64"
+               onError={e => { e.currentTarget.parentElement.style.display = 'none'; }} />
+          <p className="text-sm font-bold text-slate-500 mt-3">📱 Scannen & mitspielen</p>
+        </div>
+        <div>
+          <p className="text-3xl text-slate-400 uppercase tracking-widest font-bold">Raum-Code</p>
+          <h2 className="text-[10rem] leading-none font-mono font-bold text-[#E69F00] tracking-widest">{room.id}</h2>
+          <p className="text-lg text-slate-400 font-medium mt-2">{window.location.host}</p>
+        </div>
+      </div>
       <div className="bg-white p-8 rounded-3xl border border-sky-100 max-w-4xl mx-auto shadow-xl">
         <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700"><Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})</h3>
         <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">{p.name} {p.team && <span className="text-sm font-normal text-slate-400 ml-1">({p.team})</span>}</span>)}</div>
@@ -1946,6 +2338,16 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                  )}
                </div>
                <div className="flex gap-3 ml-auto">
+                 {room.status === 'active' && q.type !== 'buzzer' && players.length > 0 && (() => {
+                     const answered = players.filter(p => p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== '').length;
+                     const all = answered === players.length;
+                     return (
+                       <div className={`flex items-center gap-3 font-bold text-2xl px-6 py-2 rounded-full border transition-colors ${all ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-slate-50 border-sky-50 text-slate-500'}`} title="So viele haben schon geantwortet">
+                         <CheckCircle size={26}/> {answered}/{players.length}
+                         <span className="hidden xl:inline text-base font-semibold">{all ? 'alle da!' : 'geantwortet'}</span>
+                       </div>
+                     );
+                 })()}
                  {q.type !== 'buzzer' && q.type !== 'step' && <div className="flex items-center gap-3 text-[#E69F00] font-mono text-4xl font-bold bg-slate-50 px-6 py-2 rounded-full border border-sky-50"><Clock size={32}/> {room.timeLeft > 0 ? `${room.timeLeft}s` : '∞'}</div>}
                  {q.type === 'buzzer' && <div className="flex items-center gap-3 text-red-500 font-bold uppercase text-2xl bg-red-50 px-6 py-2 rounded-full text-red-600 animate-pulse"><Bell size={28}/> Buzzer aktiv</div>}
                </div>
