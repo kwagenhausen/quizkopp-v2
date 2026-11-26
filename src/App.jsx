@@ -13,13 +13,82 @@ const getPinIcon = (isTarget = false) => {
     if (typeof window === 'undefined') return null;
     return L.divIcon({
         className: 'custom-css-pin',
-        html: `<div style="background-color: ${isTarget ? '#10B981' : '#E69F00'}; width: 24px; height: 24px; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 6px rgba(0,0,0,0.4); position: relative; top: -12px; left: -12px;"></div>`,
+        html: `<div style="background-color: ${isTarget ? '#DC2626' : '#E69F00'}; width: 24px; height: 24px; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 6px rgba(0,0,0,0.4); position: relative; top: -12px; left: -12px;"></div>`,
         iconSize: [0, 0]
     });
 };
 
+// --- KARTENSTILE & STARTAUSSCHNITTE FÜR DAS GEO-QUIZ ---
+// Beide Stile sind kostenlos, ohne API-Schlüssel und zeigen keine Ländergrenzen, Städte oder Beschriftungen.
+const MAP_STYLES = {
+    comic: { label: '🎮 Comic (wie Schlag den Star)' },
+    satellite: { label: '🛰️ Satellit mit Vegetation (NASA)' },
+};
+
+const MAP_VIEWS = {
+    world:     { label: '🌍 Welt',          bounds: [[-50, -160], [72, 175]] },
+    europe:    { label: '🇪🇺 Europa',        bounds: [[35, -11], [70, 40]] },
+    germany:   { label: '🇩🇪 Deutschland',   bounds: [[47.2, 5.8], [55.1, 15.1]] },
+    dach:      { label: '⛰️ D-A-CH',        bounds: [[45.8, 5.8], [55.1, 17.2]] },
+    northamerica: { label: '🌎 Nordamerika', bounds: [[15, -130], [62, -60]] },
+    southamerica: { label: '🌎 Südamerika',  bounds: [[-56, -82], [13, -34]] },
+    africa:    { label: '🌍 Afrika',         bounds: [[-35, -18], [37, 52]] },
+    asia:      { label: '🌏 Asien',          bounds: [[-10, 25], [60, 150]] },
+    oceania:   { label: '🌏 Australien & Ozeanien', bounds: [[-48, 110], [0, 180]] },
+};
+
+// Landflächen (ohne Ländergrenzen) von Natural Earth – wird nur einmal geladen
+const LAND_GEOJSON_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_land.geojson';
+let landPromise = null;
+const loadLandGeoJSON = () => {
+    if (!landPromise) {
+        landPromise = fetch(LAND_GEOJSON_URL)
+            .then(res => { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
+            .catch(err => { landPromise = null; throw err; });
+    }
+    return landPromise;
+};
+
+const addComicLayers = (map, mapDom) => {
+    mapDom.style.backgroundColor = '#4FB6EC'; // helles Meerblau
+    let closed = false;
+    map.on('unload', () => { closed = true; });
+    loadLandGeoJSON()
+        .then(data => {
+            if (closed) return; // Karte wurde inzwischen geschlossen
+            const base = { interactive: false };
+            // Weißer Schimmer an den Küsten (zwei Lagen, breit & weich + schmal & hell)
+            L.geoJSON(data, { ...base, style: { color: '#FFFFFF', weight: 16, opacity: 0.25, fill: false, lineJoin: 'round' } }).addTo(map);
+            L.geoJSON(data, { ...base, style: { color: '#E6F7FF', weight: 6, opacity: 0.7, fill: false, lineJoin: 'round' } }).addTo(map);
+            // Grünes Land
+            L.geoJSON(data, { ...base, style: { color: '#3F9E22', weight: 1, opacity: 1, fillColor: '#5CC032', fillOpacity: 1 } }).addTo(map);
+        })
+        .catch(e => console.error('Konnte die Landflächen nicht laden:', e));
+};
+
+const addSatelliteLayer = (map, mapDom) => {
+    mapDom.style.backgroundColor = '#0B2A4A';
+    const nasa = L.tileLayer('https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/EPSG3857_500m/{z}/{y}/{x}.jpeg', {
+        maxNativeZoom: 8,
+        maxZoom: 10,
+        attribution: 'NASA Blue Marble'
+    });
+    // Falls der NASA-Server streikt: automatisch auf Esri-Satellitenbilder (ebenfalls ohne Beschriftung) wechseln
+    let switched = false;
+    nasa.on('tileerror', () => {
+        if (switched) return;
+        switched = true;
+        map.removeLayer(nasa);
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            maxZoom: 10,
+            attribution: 'Esri, Maxar, Earthstar Geographics'
+        }).addTo(map);
+    });
+    nasa.addTo(map);
+};
+
 // --- DIE NATIVE, CRASH-SICHERE ALL-IN-ONE KARTE ---
-const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readOnly = false, hideLabels = false }) => {
+const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readOnly = false, hideLabels = false, mapStyle = 'comic', startView = 'europe' }) => {
     const mapDomRef = useRef(null);
     const mapRef = useRef(null);
     const markerRef = useRef(null);
@@ -34,34 +103,23 @@ const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = [], readO
         const map = L.map(mapDomRef.current, {
             maxZoom: maxZoomLevel,
             minZoom: 2,
-            maxBounds: [[-90, -180], [90, 180]] // Verhindert, dass man in den "leeren Raum" scrollt
-        }).setView([lat || 51.165, lng || 10.451], readOnly ? 4 : 5);
+            maxBounds: [[-85, -200], [85, 200]], // Verhindert, dass man in den "leeren Raum" scrollt
+            maxBoundsViscosity: 0.8
+        });
+        const view = MAP_VIEWS[startView] || MAP_VIEWS.europe;
+        if (hideLabels && !readOnly) {
+            // Spieler starten im gewählten Ausschnitt – passt sich automatisch an die Bildschirmgröße an
+            map.fitBounds(view.bounds);
+        } else {
+            map.setView([lat || 51.165, lng || 10.451], readOnly ? 4 : 5);
+        }
         
         mapRef.current = map;
         
-        // 2. KARTEN-MATERIAL AUSWÄHLEN (GeoJSON für Spieler, Standard für Setup)
+        // 2. KARTEN-MATERIAL AUSWÄHLEN (ohne Beschriftung für Spieler & Beamer, Standard für Setup)
         if (hideLabels) {
-            // GENIALER TRICK: Wir nutzen keine Kacheln mehr, sondern zeichnen die Vektoren selbst!
-            // Dadurch 100% kostenlos, 0% Wasserzeichen, 0% Text. Exakt wie auf deinem Screenshot.
-            mapDomRef.current.style.backgroundColor = '#F9F5F0'; // Beige/Pinker Ozean-Hintergrund
-            
-            // Wir laden eine schlanke Datei mit allen Ländergrenzen der Welt
-            fetch('https://raw.githubusercontent.com/holtzy/D3-graph-gallery/master/DATA/world.geojson')
-                .then(res => res.json())
-                .then(data => {
-                    if (!mapRef.current) return;
-                    L.geoJSON(data, {
-                        interactive: false, // WICHTIG: Lässt Klicks auf die Länder durch zur Karte!
-                        style: {
-                            interactive: false,
-                            color: '#FFFFFF', // Weiße Grenzen
-                            weight: 1,
-                            fillColor: '#2A81A1', // Das schöne Teal/Blau aus deinem Screenshot
-                            fillOpacity: 1
-                        }
-                    }).addTo(mapRef.current);
-                })
-                .catch(e => console.error("Konnte Ländergrenzen nicht laden:", e));
+            if (mapStyle === 'satellite') addSatelliteLayer(map, mapDomRef.current);
+            else addComicLayers(map, mapDomRef.current);
         } else {
             // Im Admin/Setup-Modus nutzen wir die detaillierte OpenStreetMap
             mapDomRef.current.style.backgroundColor = '#aad3df';
@@ -536,7 +594,9 @@ const getBaseQuestionTemplate = () => ({
     note: '',
     steps: [{text: '', points: 5}, {text: '', points: 3}, {text: '', points: 1}],
     targetLat: 51.165691, 
-    targetLng: 10.451526
+    targetLng: 10.451526,
+    mapStyle: 'comic',
+    startView: 'europe'
 });
 
 const getSlideTemplate = () => ({
@@ -1251,6 +1311,8 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                   if (val === 'geo') {
                       n[qIndex].targetLat = n[qIndex].targetLat ?? 51.165691;
                       n[qIndex].targetLng = n[qIndex].targetLng ?? 10.451526;
+                      n[qIndex].mapStyle = n[qIndex].mapStyle || 'comic';
+                      n[qIndex].startView = n[qIndex].startView || 'europe';
                   }
                   setQs(n);
                }}>
@@ -1356,7 +1418,29 @@ function HostSetup({ onCreate, onBack, db, initialQuiz }) {
                         />
                     </MapErrorBoundary>
                 </div>
-                <p className="text-xs text-slate-400 mt-2">Klicke auf die Karte, um den grünen Lösungs-Pin zu verschieben.</p>
+                <p className="text-xs text-slate-400 mt-2">Klicke auf die Karte, um den roten Lösungs-Pin zu verschieben.</p>
+
+                <div className="flex flex-wrap gap-4 mt-4">
+                  <label className="text-xs font-bold text-slate-500 flex flex-col gap-1">
+                    Kartenstil
+                    <select className="bg-white p-2 rounded-lg border border-sky-100 text-sm font-medium text-slate-700" value={q.mapStyle || 'comic'} onChange={e => update(qIndex, 'mapStyle', e.target.value)}>
+                      {Object.entries(MAP_STYLES).map(([k, st]) => <option key={k} value={k}>{st.label}</option>)}
+                    </select>
+                  </label>
+                  <label className="text-xs font-bold text-slate-500 flex flex-col gap-1">
+                    Startausschnitt auf den Handys
+                    <select className="bg-white p-2 rounded-lg border border-sky-100 text-sm font-medium text-slate-700" value={q.startView || 'europe'} onChange={e => update(qIndex, 'startView', e.target.value)}>
+                      {Object.entries(MAP_VIEWS).map(([k, vw]) => <option key={k} value={k}>{vw.label}</option>)}
+                    </select>
+                  </label>
+                </div>
+
+                <p className="text-sm font-bold text-sky-700 uppercase tracking-widest mt-6 mb-2">👀 Vorschau: So sehen es die Spieler</p>
+                <div className="w-full max-w-md rounded-xl overflow-hidden border border-sky-200 z-0 relative" style={{ height: '280px' }}>
+                    <MapErrorBoundary>
+                        <GeoMap key={`${q.mapStyle || 'comic'}-${q.startView || 'europe'}`} hideLabels={true} isTarget={false} mapStyle={q.mapStyle || 'comic'} startView={q.startView || 'europe'} />
+                    </MapErrorBoundary>
+                </div>
              </div>
           )}
           
@@ -1784,12 +1868,14 @@ function HostDashboard({ room, players, onReveal, onNext, onCorrect, onBuzzerCor
                <div className="w-full rounded-3xl overflow-hidden border border-sky-200 z-0 relative mb-8 shadow-inner" style={{ height: '500px' }}>
                   <MapErrorBoundary>
                       <GeoMap 
+                          key={`reveal-${room.currentQuestionIndex}`}
                           lat={safeTargetLat} 
                           lng={safeTargetLng} 
                           isTarget={true} 
                           readOnly={true} 
                           playerPins={playerPins} 
                           hideLabels={true} 
+                          mapStyle={q.mapStyle || 'comic'}
                       />
                   </MapErrorBoundary>
                </div>
@@ -2283,11 +2369,14 @@ function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }
                   <div className="w-full rounded-2xl overflow-hidden border border-sky-200 z-0 relative shadow-sm" style={{ height: '350px' }}>
                       <MapErrorBoundary>
                           <GeoMap 
+                              key={`player-${room.currentQuestionIndex}`}
                               lat={v?.lat} 
                               lng={v?.lng} 
                               isTarget={false} 
                               onMapClick={setV} 
                               hideLabels={true} 
+                              mapStyle={q.mapStyle || 'comic'}
+                              startView={q.startView || 'europe'}
                           />
                       </MapErrorBoundary>
                   </div>
