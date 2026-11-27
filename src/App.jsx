@@ -131,6 +131,7 @@ export default function App() {
       currentStepIndex: pq.type === 'step' ? Math.max(0, (pq.steps || []).length - 1) : 0,
       timeLeft: 0,
       timerPaused: false,
+      slideStep: 99, // beim Zurückgehen sind alle Punkte schon aufgedeckt
       buzzerWinner: null,
       buzzerReaction: null,
       buzzerLockedOut: [],
@@ -287,26 +288,32 @@ export default function App() {
     await batch.commit();
   };
 
-  if (loading) return <div className="min-h-screen bg-[#F0F9FF] flex items-center justify-center text-[#1E293B] font-bold">Lade Quizkopp...</div>;
+  if (loading) return <div className="min-h-screen bg-[#F4E9D4] flex items-center justify-center text-[#14284B] font-bold">Lade Quizkopp...</div>;
 
   const isSpecialView = role === 'beamer' || role === 'observer';
 
   return (
-    <div className="min-h-screen bg-[#F0F9FF] text-[#1E293B] font-sans">
-      <header className="bg-white border-b border-sky-100 p-4 sticky top-0 z-10 shadow-sm">
+    <div className="min-h-screen bg-[#F4E9D4] text-[#14284B] font-sans">
+      <BrandStyles />
+      <header className="bg-[#F8EFDF] border-b border-[#E6D6B8] px-4 py-3 sticky top-0 z-10">
         <div className={(role === 'host' || role === 'beamer' || role === 'setup') ? "w-full max-w-[1920px] mx-auto px-4 flex justify-between items-center" : "max-w-4xl mx-auto flex justify-between items-center"}>
-          <div className="flex items-center gap-2">
-              <Trophy className="text-[#E69F00]"/>
-              <h1 className="text-xl font-bold italic">
-                  Die Quizkopp App 
-                  {role === 'beamer' && <span className="text-slate-300 font-normal ml-2">| Beamer</span>}
-                  {role === 'observer' && <span className="text-slate-300 font-normal ml-2">| Zuschauer</span>}
-              </h1>
+          <div className="flex items-center gap-3">
+              <div>
+                <div className="text-2xl leading-none text-[#14284B]" style={{ fontFamily: "'DM Serif Display', serif" }}>
+                  Der Quizkopp
+                  {role === 'beamer' && <span className="text-[#8C7A55] text-base ml-2" style={{ fontFamily: "'Nunito', sans-serif" }}>| Beamer</span>}
+                  {role === 'observer' && <span className="text-[#8C7A55] text-base ml-2" style={{ fontFamily: "'Nunito', sans-serif" }}>| Zuschauer</span>}
+                </div>
+                <div className="text-xs font-bold text-[#5B6B85] mt-0.5">Quizevents im Norden</div>
+              </div>
+              <span className="w-10 h-10 rounded-full bg-[#D4A12A] flex items-center justify-center flex-shrink-0">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#14284B" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="5" r="2"/><path d="M12 7v14M5 12H3a9 9 0 0 0 18 0h-2M8 10h8"/></svg>
+              </span>
           </div>
           <div className="flex items-center gap-4">
-          {role === 'host' && <button onClick={toggleModerator} className={`flex items-center gap-1 text-sm font-bold px-3 py-1 rounded-full transition-colors ${moderatorMode ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-sky-500'}`} title="Moderatoren-Ansicht: Lösung, Notizen & Vorschau – der Beamer läuft in einem eigenen Fenster"><Mic size={18}/> <span className="hidden md:inline">{moderatorMode ? 'Moderation an' : 'Moderation'}</span></button>}
-          {(role === 'host' || role === 'beamer') && <button onClick={toggleSound} className="text-slate-400 hover:text-sky-500 transition-colors" title={soundOn ? 'Sound ausschalten' : 'Sound einschalten'}>{soundOn ? <Volume2 size={20}/> : <VolumeX size={20}/>}</button>}
-          {(role === 'host' || role === 'beamer') && <button onClick={toggleFullscreen} className="text-slate-400 hover:text-sky-500 transition-colors" title="Vollbild an/aus"><Maximize size={20}/></button>}
+          {role === 'host' && <button onClick={toggleModerator} className={`flex items-center gap-1 text-sm font-bold px-3 py-1 rounded-full transition-colors ${moderatorMode ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-[#2B4470]'}`} title="Moderatoren-Ansicht: Lösung, Notizen & Vorschau – der Beamer läuft in einem eigenen Fenster"><Mic size={18}/> <span className="hidden md:inline">{moderatorMode ? 'Moderation an' : 'Moderation'}</span></button>}
+          {(role === 'host' || role === 'beamer') && <button onClick={toggleSound} className="text-slate-400 hover:text-[#2B4470] transition-colors" title={soundOn ? 'Sound ausschalten' : 'Sound einschalten'}>{soundOn ? <Volume2 size={20}/> : <VolumeX size={20}/>}</button>}
+          {(role === 'host' || role === 'beamer') && <button onClick={toggleFullscreen} className="text-slate-400 hover:text-[#2B4470] transition-colors" title="Vollbild an/aus"><Maximize size={20}/></button>}
           {role && <button onClick={() => { if(role==='host' && currentRoomCode) { if (!window.confirm('Quiz wirklich beenden? Der Raum wird für alle geschlossen.')) return; deleteRoomWithPlayers(currentRoomCode).catch(console.error); } leaveRoom(); }} className="text-slate-400 hover:text-red-500 transition-colors"><LogOut size={20}/></button>}
           </div>
         </div>
@@ -368,6 +375,7 @@ export default function App() {
               status:last?'finished':'active',
               currentQuestionIndex:last?activeRoom.currentQuestionIndex:nextIdx,
               currentStepIndex: 0,
+              slideStep: 0,
               timeLeft:activeRoom.questions[nextIdx]?.timer || 0, 
               buzzerWinner: null, 
               buzzerReaction: null,
@@ -400,14 +408,53 @@ export default function App() {
         {role === 'observer' && activeRoom && <ObserverDashboard room={activeRoom} players={players} />}
 
         {(role === 'player' || role === 'beamer' || role === 'observer') && roomMissing && (
-          <div className="text-center py-16 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-md mx-auto text-slate-700">
+          <div className="text-center py-16 bg-[#FFFBF3] rounded-3xl border border-[#E6D6B8] shadow-xl max-w-md mx-auto text-[#14284B]">
             <div className="text-6xl mb-6">👋</div>
             <h2 className="text-2xl font-bold mb-2">Das Quiz wurde beendet</h2>
             <p className="text-slate-500 mb-8">Danke fürs Mitspielen!</p>
-            <button onClick={leaveRoom} className="bg-[#E69F00] text-white px-8 py-3 rounded-xl font-bold shadow-md">Zur Startseite</button>
+            <button onClick={leaveRoom} className="bg-[#D4A12A] text-white px-8 py-3 rounded-xl font-bold shadow-md">Zur Startseite</button>
           </div>
         )}
       </main>
     </div>
   );
+}
+
+// --- MARKEN-STILE: Schriften & Quizkopp-Look für die ganze App ---
+const BRAND_CSS = `
+body { font-family: 'Nunito', system-ui, sans-serif; background: #F4E9D4; color: #14284B; }
+h1, h2 { font-family: 'DM Serif Display', Georgia, serif; font-weight: 400 !important; letter-spacing: 0.005em; }
+.font-mono { font-family: 'DM Serif Display', Georgia, serif !important; font-weight: 400 !important; letter-spacing: 0.03em; }
+button.bg-emerald-500 { background-color: #D4A12A !important; color: #14284B !important; box-shadow: 0 5px 0 #B98A1C; }
+button.bg-emerald-500:hover { background-color: #C8961F !important; }
+.bg-\\[\\#D4A12A\\].text-white { color: #14284B !important; }
+button.bg-\\[\\#D4A12A\\] { box-shadow: 0 5px 0 #B98A1C; }
+button.bg-\\[\\#D4A12A\\]:active, button.bg-emerald-500:active { transform: translateY(3px); box-shadow: 0 2px 0 #B98A1C; }
+
+/* Navy-Bühne für Fragen auf dem Beamer */
+.qk-stage { background: #14284B !important; color: #F4E9D4; border-color: #0E1D38 !important; }
+.qk-stage h2 { color: #FFFFFF; }
+.qk-stage :is(.text-\\[\\#14284B\\], .text-\\[\\#0E1D38\\], .text-slate-600) { color: #F4E9D4 !important; }
+.qk-stage :is(.text-slate-400, .text-slate-500, .text-\\[\\#8C7A55\\], .text-\\[\\#2B4470\\]) { color: #C9D3E3 !important; }
+.qk-stage :is(.bg-slate-50, .bg-\\[\\#F8EFDF\\], .bg-\\[\\#F0E3C8\\]) { background-color: rgba(244,233,212,0.09) !important; }
+.qk-stage :is(.border-\\[\\#E6D6B8\\], .border-\\[\\#EFE3CC\\], .border-\\[\\#DCC7A0\\]) { border-color: rgba(244,233,212,0.2) !important; }
+/* helle Inseln auf der Bühne (Karten, Hinweise) behalten dunkle Schrift */
+.qk-stage :is(.bg-\\[\\#FFFBF3\\], .bg-white, .bg-emerald-50, .bg-amber-50, .bg-red-50, .bg-yellow-50, .bg-orange-50, .bg-green-50) { color: #14284B; }
+.qk-stage :is(.bg-\\[\\#FFFBF3\\], .bg-white, .bg-emerald-50, .bg-amber-50, .bg-red-50, .bg-yellow-50, .bg-orange-50, .bg-green-50) :is(.text-\\[\\#14284B\\], .text-\\[\\#0E1D38\\], .text-slate-600) { color: #14284B !important; }
+.qk-stage :is(.bg-\\[\\#FFFBF3\\], .bg-white, .bg-emerald-50, .bg-amber-50, .bg-red-50, .bg-yellow-50, .bg-orange-50, .bg-green-50) :is(.text-slate-400, .text-slate-500, .text-\\[\\#8C7A55\\]) { color: #64748B !important; }
+.qk-stage :is(.bg-\\[\\#FFFBF3\\], .bg-white, .bg-emerald-50, .bg-amber-50, .bg-red-50, .bg-yellow-50, .bg-orange-50, .bg-green-50) h2 { color: #14284B; }
+`;
+
+function BrandStyles() {
+  useEffect(() => {
+    if (document.getElementById('qk-fonts')) return;
+    const pre = document.createElement('link');
+    pre.rel = 'preconnect'; pre.href = 'https://fonts.gstatic.com'; pre.crossOrigin = 'anonymous';
+    const link = document.createElement('link');
+    link.id = 'qk-fonts'; link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Nunito:wght@400;600;700;800;900&display=swap';
+    document.head.appendChild(pre);
+    document.head.appendChild(link);
+  }, []);
+  return <style>{BRAND_CSS}</style>;
 }

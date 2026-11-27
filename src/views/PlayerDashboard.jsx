@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowDown, ArrowUp, CheckCircle, Clock, Pause, Play, Trophy } from 'lucide-react';
 import { GeoMap, MapErrorBoundary } from '../components/GeoMap';
-import { Confetti, QuizImage, TeamAvatar, ZoomImage, useZoomProgress } from '../components/ui';
+import { Confetti, LifeRingTimer, QuizImage, TeamAvatar, ZoomImage, useZoomProgress } from '../components/ui';
 import { calculateDistance, countOrderCorrect, getMediaType, getOrderItems, getOrderShuffle, getPlayerStyle, getPodiumSize, getQuestionNumber, getRoundNumber, getSortedTeams, isInfoItem, isManualGraded, isPlaceRevealed, isSlideLike, vibrate } from '../lib/helpers';
+import { FitStage, SlideCanvas, getSlideLayout } from '../components/Slides';
 
 export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }) {
   const q = room.questions[room.currentQuestionIndex];
@@ -49,11 +50,11 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
   };
 
   if (room.status === 'lobby') return (
-    <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700">
+    <div className="text-center py-20 bg-[#FFFBF3] rounded-3xl border border-[#E6D6B8] shadow-xl max-w-sm mx-auto text-[#14284B]">
       <div className="mb-6"><TeamAvatar style={getPlayerStyle(player, players)} size="xl" /></div>
       <h2 className="text-2xl font-bold">Hallo {player.name}!</h2>
       {player.team && <div className="mt-4 text-lg font-bold inline-block px-6 py-2 rounded-full border-2" style={{ color: getPlayerStyle(player, players).color, borderColor: getPlayerStyle(player, players).color, backgroundColor: `${getPlayerStyle(player, players).color}12` }}>Dein Team: {player.team}</div>}
-      <p className="mt-8 animate-pulse text-[#E69F00]">Warte auf Start...</p>
+      <p className="mt-8 animate-pulse text-[#D4A12A]">Warte auf Start...</p>
     </div>
   );
   
@@ -65,7 +66,7 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
     const podiumStepP = room.podiumStep ?? getPodiumSize(sortedTeams);
     if (myRank > 0 && !isPlaceRevealed(myRank, sortedTeams.length, podiumStepP)) {
       return (
-        <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700">
+        <div className="text-center py-20 bg-[#FFFBF3] rounded-3xl border border-[#E6D6B8] shadow-xl max-w-sm mx-auto text-[#14284B]">
           <div className="text-6xl mb-6 animate-bounce">🥁</div>
           <h2 className="text-2xl font-bold mb-2">Siegerehrung läuft!</h2>
           <p className="text-slate-500 px-6">Schau nach vorne – gleich wird enthüllt, wo ihr gelandet seid …</p>
@@ -74,19 +75,19 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
     }
 
     return (
-      <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700 relative overflow-hidden">
+      <div className="text-center py-20 bg-[#FFFBF3] rounded-3xl border border-[#E6D6B8] shadow-xl max-w-sm mx-auto text-[#14284B] relative overflow-hidden">
         {myRank <= 3 && <Confetti />} 
-        <Trophy size={64} className="mx-auto text-[#E69F00] mb-6 relative z-10"/>
+        <Trophy size={64} className="mx-auto text-[#D4A12A] mb-6 relative z-10"/>
         <h2 className="text-2xl font-bold mb-2 relative z-10">Quiz beendet!</h2>
         
         <div className="mt-6 mb-8 relative z-10">
             <p className="text-sm text-slate-400 font-bold uppercase tracking-widest mb-2">Team-Punkte</p>
-            <div className="text-6xl font-bold text-[#E69F00]">{myTeam?.totalScore || 0}</div>
+            <div className="text-6xl font-bold text-[#D4A12A]">{myTeam?.totalScore || 0}</div>
         </div>
 
         <div className="text-xl font-bold text-emerald-500 bg-emerald-50 inline-block px-6 py-3 rounded-full border border-emerald-100 mb-6 relative z-10">Dein Team-Platz: {myRank}</div>
         
-        <div className="border-t border-sky-50 pt-6 relative z-10">
+        <div className="border-t border-[#EFE3CC] pt-6 relative z-10">
             <p className="text-sm text-slate-400">Deine persönlichen Punkte</p>
             <p className="text-2xl font-bold text-slate-600">{player.score}</p>
         </div>
@@ -95,26 +96,30 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
   }
   
   if (isSlideLike(q)) {
+    const lay = getSlideLayout(q);
     return (
-      <div className="text-center py-10 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-md mx-auto text-slate-700 px-4">
-        {q.type === 'round' && !(q.showImg && q.imgUrl) ? (
+      <div className="text-center py-8 bg-[#FFFBF3] rounded-3xl border border-[#E6D6B8] shadow-xl max-w-md mx-auto text-[#14284B] px-4">
+        {q.showImg ? (
+          <div className="w-full rounded-2xl overflow-hidden bg-black" style={{ aspectRatio: '16 / 9' }}>
+            <FitStage><SlideCanvas q={q} room={room} /></FitStage>
+          </div>
+        ) : q.type === 'round' ? (
           <div className="py-8">
             <div className="text-5xl mb-4">🎬</div>
-            <div className="text-sm font-black tracking-[0.3em] text-sky-500 mb-2">RUNDE {getRoundNumber(room.questions, room.currentQuestionIndex)}</div>
-            <h2 className="text-3xl font-bold text-[#E69F00]">{q.q}</h2>
+            <div className="text-sm font-black tracking-[0.3em] text-[#2B4470] mb-2">RUNDE {getRoundNumber(room.questions, room.currentQuestionIndex)}</div>
+            <h2 className="text-3xl font-bold text-[#D4A12A]">{q.q}</h2>
             <p className="text-slate-500 mt-4">Gleich geht's los …</p>
           </div>
-        ) : q.showImg && q.imgUrl ? (
-          <QuizImage src={q.imgUrl} className="w-full max-h-[65vh] object-contain rounded-xl bg-slate-50" placeholderClassName="h-48 flex items-center justify-center text-slate-300 animate-pulse" />
-        ) : q.showImg && q.q ? (
-          <div className="py-6">
-            <h2 className="text-3xl font-bold mb-4 text-[#E69F00]">{q.q}</h2>
-            {q.note && <p className="text-lg text-slate-600 whitespace-pre-line">{q.note}</p>}
+        ) : lay === 'pause' ? (
+          <div className="py-10">
+            <div className="text-6xl mb-6">☕</div>
+            <h2 className="text-2xl font-bold mb-2 text-[#D4A12A]">{q.q || 'Kurze Pause'}</h2>
+            <p className="text-slate-500">Gleich geht's weiter …</p>
           </div>
         ) : (
           <div className="py-10">
             <div className="text-6xl mb-6">👀</div>
-            <h2 className="text-2xl font-bold mb-2 text-[#E69F00]">Schau nach vorne!</h2>
+            <h2 className="text-2xl font-bold mb-2 text-[#D4A12A]">Schau nach vorne!</h2>
             <p className="text-slate-500">Gleich geht's weiter …</p>
           </div>
         )}
@@ -128,16 +133,16 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
     const myRank = sortedTeams.findIndex(t => t.name === myTeamId) + 1;
     
     return (
-      <div className="text-center py-16 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-md mx-auto text-slate-700">
-        <h2 className="text-3xl font-bold mb-6 text-[#E69F00]">⏸️ {q.q || 'Pause'}</h2>
+      <div className="text-center py-16 bg-[#FFFBF3] rounded-3xl border border-[#E6D6B8] shadow-xl max-w-md mx-auto text-[#14284B]">
+        <h2 className="text-3xl font-bold mb-6 text-[#D4A12A]">⏸️ {q.q || 'Pause'}</h2>
         <p className="mb-8 text-lg font-medium text-slate-500 px-6">Zeit zum Durchatmen! Schau auf den Beamer für den aktuellen Zwischenstand.</p>
         
-        <div className="bg-sky-50 py-6 px-4 mx-6 rounded-2xl border border-sky-100 mb-6">
+        <div className="bg-[#F8EFDF] py-6 px-4 mx-6 rounded-2xl border border-[#E6D6B8] mb-6">
             <p className="text-sm text-slate-400 font-bold uppercase tracking-widest mb-1">Eure Team-Punkte</p>
-            <div className="text-5xl font-bold text-[#E69F00]">{myTeam?.totalScore || 0}</div>
+            <div className="text-5xl font-bold text-[#D4A12A]">{myTeam?.totalScore || 0}</div>
         </div>
 
-        <div className="text-lg font-bold text-sky-600 bg-white inline-block px-6 py-2 rounded-full border border-sky-200">
+        <div className="text-lg font-bold text-[#14284B] bg-[#FFFBF3] inline-block px-6 py-2 rounded-full border border-[#DCC7A0]">
             Aktueller Platz: {myRank}
         </div>
       </div>
@@ -199,15 +204,15 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
 
   if (q.type === 'buzzer') {
     return (
-      <div className="max-w-md mx-auto space-y-6 text-center text-slate-700">
+      <div className="max-w-md mx-auto space-y-6 text-center text-[#14284B]">
         <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest mb-6">
             <span>Frage {getQuestionNumber(room.questions, room.currentQuestionIndex)}</span>
-            <span className="text-[#E69F00]">Persönliche Punkte: {player.score}</span>
+            <span className="text-[#D4A12A]">Persönliche Punkte: {player.score}</span>
         </div>
         
-        {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <QuizImage src={q.imgUrl} className="w-full h-40 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 mb-6"/>}
+        {q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <QuizImage src={q.imgUrl} className="w-full h-40 object-contain rounded-xl bg-slate-50 p-2 border border-[#EFE3CC] mb-6"/>}
         {q.imgUrl && q.showImg && (getMediaType(q.imgUrl) === 'youtube' || getMediaType(q.imgUrl) === 'audio') && (
-           <div className="w-full h-32 bg-slate-800 rounded-xl flex flex-col items-center justify-center text-sky-400 shadow-sm mb-6 border border-slate-700">
+           <div className="w-full h-32 bg-slate-800 rounded-xl flex flex-col items-center justify-center text-[#8C7A55] shadow-sm mb-6 border border-slate-700">
               <Play size={32} className="mb-2 opacity-50"/>
               <span className="text-sm font-bold uppercase tracking-widest">Achtung Beamer</span>
               <span className="text-xs text-slate-400 mt-1">Audio / Video läuft beim Quizmaster</span>
@@ -239,7 +244,7 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
                     {q.correctValue && (
                         <div className="mt-6">
                             <span className="text-xs uppercase font-bold tracking-widest opacity-70 block mb-2 text-slate-500">Richtige Lösung:</span>
-                            <span className="text-2xl font-black bg-white px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-slate-800">
+                            <span className="text-2xl font-black bg-[#FFFBF3] px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-[#0E1D38]">
                                 {q.correctValue}
                             </span>
                         </div>
@@ -249,7 +254,7 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
                 {q.note && (
                     <div className="bg-blue-50 border border-blue-200 p-6 rounded-3xl text-left shadow-sm">
                         <span className="text-xs uppercase font-bold tracking-widest text-blue-500 block mb-2">💡 Schon gewusst?</span>
-                        <p className="text-slate-700 text-sm leading-relaxed whitespace-pre-line">{q.note}</p>
+                        <p className="text-[#14284B] text-sm leading-relaxed whitespace-pre-line">{q.note}</p>
                     </div>
                 )}
             </div>
@@ -259,27 +264,25 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
   }
   
   return (
-    <div className="max-w-md mx-auto space-y-6 text-slate-700">
+    <div className="max-w-md mx-auto space-y-6 text-[#14284B]">
       <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
         <span className="flex items-center gap-2"><TeamAvatar style={getPlayerStyle(player, players)} size="xs" /> Frage {getQuestionNumber(room.questions, room.currentQuestionIndex)}</span>
         {q.isJoker && <span className="text-amber-500 font-black animate-pulse bg-amber-50 px-2 py-1 rounded">🌟 2 PUNKTE</span>}
-        {q.timer === 0 && <span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> ∞</span>}
+        {q.timer === 0 && <span className="flex items-center gap-1 text-[#D4A12A]"><Clock size={12}/> ∞</span>}
       </div>
 
       {q.timer > 0 && room.status === 'active' && !timeIsUp && (
         <div className="flex justify-center my-4">
-           <div className={`flex items-center gap-3 px-8 py-3 rounded-full border-4 shadow-lg font-mono text-4xl font-bold transition-all duration-300 ${room.timeLeft <= 5 ? 'bg-red-50 border-red-500 text-red-600 animate-pulse scale-110' : 'bg-white border-sky-100 text-[#E69F00]'}`}>
-              {room.timerPaused ? <Pause size={36}/> : <Clock size={36}/>} {room.timeLeft}s
-           </div>
+           <LifeRingTimer timeLeft={room.timeLeft} total={q.timer} paused={room.timerPaused} size={92} />
         </div>
       )}
 
       <h2 className="text-2xl font-bold leading-tight mb-2">{q.q}</h2>
       
       {q.type === 'zoom' && q.imgUrl && q.showImg && <ZoomImage q={q} progress={zoomProgress} revealed={room.status === 'revealed'} maxH="35vh" />}
-      {q.type !== 'zoom' && q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <QuizImage src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-sky-50 shadow-sm"/>}
+      {q.type !== 'zoom' && q.imgUrl && q.showImg && getMediaType(q.imgUrl) === 'image' && <QuizImage src={q.imgUrl} className="w-full h-48 object-contain rounded-xl bg-slate-50 p-2 border border-[#EFE3CC] shadow-sm"/>}
       {q.imgUrl && q.showImg && (getMediaType(q.imgUrl) === 'youtube' || getMediaType(q.imgUrl) === 'audio') && (
-         <div className="w-full h-32 bg-slate-800 rounded-xl flex flex-col items-center justify-center text-sky-400 shadow-sm mb-6 border border-slate-700">
+         <div className="w-full h-32 bg-slate-800 rounded-xl flex flex-col items-center justify-center text-[#8C7A55] shadow-sm mb-6 border border-slate-700">
             <Play size={32} className="mb-2 opacity-50"/>
             <span className="text-sm font-bold uppercase tracking-widest">Achtung Beamer</span>
             <span className="text-xs text-slate-400 mt-1">Audio / Video läuft beim Quizmaster</span>
@@ -290,8 +293,8 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
         <div className="space-y-3 mb-6">
             <h3 className="font-bold text-slate-500 uppercase tracking-widest text-xs">Aktuelle Hinweise:</h3>
             {q.steps && q.steps.slice(0, (room.currentStepIndex || 0) + 1).map((s, idx) => (
-                <div key={idx} className="bg-sky-50 border border-sky-100 p-3 rounded-xl shadow-sm text-sm">
-                    <span className="font-bold text-sky-600 mr-2">{idx + 1}.</span> {s.text}
+                <div key={idx} className="bg-[#F8EFDF] border border-[#E6D6B8] p-3 rounded-xl shadow-sm text-sm">
+                    <span className="font-bold text-[#14284B] mr-2">{idx + 1}.</span> {s.text}
                 </div>
             ))}
         </div>
@@ -301,7 +304,7 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
       
       {room.status === 'active' && !hasAnswered && !timeIsUp && (
         <div className="space-y-3 pt-2">
-          {q.type === 'multiple' && q.options.map((o,i)=><button key={i} onClick={()=>onAnswer(i)} className="w-full bg-white p-5 rounded-2xl text-left border border-sky-100 shadow-sm font-medium active:bg-sky-50 active:scale-[0.98] transition-all">{o}</button>)}
+          {q.type === 'multiple' && q.options.map((o,i)=><button key={i} onClick={()=>onAnswer(i)} className="w-full bg-[#FFFBF3] p-5 rounded-2xl text-left border border-[#E6D6B8] shadow-sm font-medium active:bg-[#F8EFDF] active:scale-[0.98] transition-all">{o}</button>)}
           
           {q.type === 'order' && (() => {
               const items = getOrderItems(q);
@@ -311,22 +314,22 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
                 <div className="space-y-3">
                   {q.orderHint && <p className="text-sm text-slate-500 text-center font-semibold">↕️ {q.orderHint}</p>}
                   {cur.map((itemIdx, pos) => (
-                    <div key={itemIdx} className="flex items-center gap-2 bg-white p-3 rounded-2xl border border-sky-100 shadow-sm transition-all">
-                      <span className="w-9 h-9 rounded-xl bg-sky-50 text-sky-600 font-black flex items-center justify-center flex-shrink-0">{pos + 1}</span>
+                    <div key={itemIdx} className="flex items-center gap-2 bg-[#FFFBF3] p-3 rounded-2xl border border-[#E6D6B8] shadow-sm transition-all">
+                      <span className="w-9 h-9 rounded-xl bg-[#F8EFDF] text-[#14284B] font-black flex items-center justify-center flex-shrink-0">{pos + 1}</span>
                       <span className="flex-1 font-medium leading-snug">{items[itemIdx]}</span>
-                      <button onClick={() => move(pos, -1)} disabled={pos === 0} className="p-3 rounded-xl bg-slate-50 active:bg-sky-100 disabled:opacity-25" aria-label="Nach oben"><ArrowUp size={20}/></button>
-                      <button onClick={() => move(pos, 1)} disabled={pos === cur.length - 1} className="p-3 rounded-xl bg-slate-50 active:bg-sky-100 disabled:opacity-25" aria-label="Nach unten"><ArrowDown size={20}/></button>
+                      <button onClick={() => move(pos, -1)} disabled={pos === 0} className="p-3 rounded-xl bg-slate-50 active:bg-[#F0E3C8] disabled:opacity-25" aria-label="Nach oben"><ArrowUp size={20}/></button>
+                      <button onClick={() => move(pos, 1)} disabled={pos === cur.length - 1} className="p-3 rounded-xl bg-slate-50 active:bg-[#F0E3C8] disabled:opacity-25" aria-label="Nach unten"><ArrowDown size={20}/></button>
                     </div>
                   ))}
-                  <button onClick={() => onAnswer(cur)} className="w-full bg-[#E69F00] text-white py-4 rounded-2xl font-bold shadow-md">Reihenfolge einloggen</button>
+                  <button onClick={() => onAnswer(cur)} className="w-full bg-[#D4A12A] text-white py-4 rounded-2xl font-bold shadow-md">Reihenfolge einloggen</button>
                 </div>
               );
           })()}
 
           {(q.type === 'text' || q.type === 'estimation' || q.type === 'step' || q.type === 'zoom') && (
               <div className="space-y-4">
-                  <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-5 rounded-2xl border border-sky-100 outline-none focus:border-[#E69F00]" value={v} onChange={e=>setV(e.target.value)} placeholder="Antwort..."/>
-                  <button onClick={()=>onAnswer(v)} disabled={!v} className="w-full bg-[#E69F00] text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">
+                  <input type={q.type==='estimation'?'number':'text'} className="w-full bg-slate-50 p-5 rounded-2xl border border-[#E6D6B8] outline-none focus:border-[#D4A12A]" value={v} onChange={e=>setV(e.target.value)} placeholder="Antwort..."/>
+                  <button onClick={()=>onAnswer(v)} disabled={!v} className="w-full bg-[#D4A12A] text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">
                       Abschicken
                   </button>
               </div>
@@ -335,7 +338,7 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
           {/* NATIVE SPIELER MAP (Ohne Text, limitierter Zoom) */}
           {q.type === 'geo' && (
               <div className="space-y-4">
-                  <div className="w-full rounded-2xl overflow-hidden border border-sky-200 z-0 relative shadow-sm" style={{ height: '350px' }}>
+                  <div className="w-full rounded-2xl overflow-hidden border border-[#DCC7A0] z-0 relative shadow-sm" style={{ height: '350px' }}>
                       <MapErrorBoundary>
                           <GeoMap 
                               key={`player-${room.currentQuestionIndex}`}
@@ -349,7 +352,7 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
                           />
                       </MapErrorBoundary>
                   </div>
-                  <button onClick={()=>onAnswer(v)} disabled={!v || !v.lat} className="w-full bg-[#E69F00] text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">
+                  <button onClick={()=>onAnswer(v)} disabled={!v || !v.lat} className="w-full bg-[#D4A12A] text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">
                       Pin einloggen
                   </button>
               </div>
@@ -358,16 +361,16 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
       )}
 
       {room.status === 'active' && !hasAnswered && timeIsUp && (
-        <div className="text-center py-12 bg-white rounded-3xl border border-sky-100 shadow-inner text-red-500 font-bold text-lg flex flex-col items-center gap-2">
+        <div className="text-center py-12 bg-[#FFFBF3] rounded-3xl border border-[#E6D6B8] shadow-inner text-red-500 font-bold text-lg flex flex-col items-center gap-2">
            <Clock size={32}/> Zeit abgelaufen!
            <span className="text-sm text-slate-400 mt-2 font-normal">Warte auf Auflösung...</span>
         </div>
       )}
       
-      {hasAnswered && room.status === 'active' && <div className="text-center py-12 bg-white rounded-3xl border border-sky-100 shadow-inner text-[#E69F00] font-bold text-lg flex flex-col items-center gap-2"><CheckCircle size={32}/> Antwort eingeloggt!</div>}
+      {hasAnswered && room.status === 'active' && <div className="text-center py-12 bg-[#FFFBF3] rounded-3xl border border-[#E6D6B8] shadow-inner text-[#D4A12A] font-bold text-lg flex flex-col items-center gap-2"><CheckCircle size={32}/> Antwort eingeloggt!</div>}
       
       {room.status === 'revealed' && isManualGraded(q) && !player.corrected && (
-          <div className="py-12 rounded-3xl border-2 text-center bg-slate-50 border-sky-100 text-slate-400 shadow-inner animate-pulse">
+          <div className="py-12 rounded-3xl border-2 text-center bg-slate-50 border-[#E6D6B8] text-slate-400 shadow-inner animate-pulse">
              <h3 className="text-xl font-bold">{q.type === 'geo' && room.geoStage === 'pins' ? '📍 Alle Tipps sind jetzt vorne zu sehen!' : 'Quizmaster wertet aus...'}</h3>
              <p className="text-sm mt-2">{q.type === 'geo' && room.geoStage === 'pins' ? 'Gleich wird das Ziel aufgelöst …' : 'Warte auf die Entscheidung.'}</p>
           </div>
@@ -381,14 +384,14 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
                  {q.type === 'geo' && player.currentAnswer?.lat && (
                      <div className="mt-6">
                          <span className="text-xs uppercase font-bold tracking-widest opacity-70 block mb-2 text-slate-500">Dein Ergebnis:</span>
-                         <span className="text-2xl font-black bg-white px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-slate-800">
+                         <span className="text-2xl font-black bg-[#FFFBF3] px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-[#0E1D38]">
                              {calculateDistance(Number(q.targetLat) || 51.165, Number(q.targetLng) || 10.451, Number(player.currentAnswer.lat), Number(player.currentAnswer.lng)).toFixed(1)} km entfernt
                          </span>
                      </div>
                  )}
 
                  {q.type === 'order' && (
-                     <div className="mt-6 text-left bg-white rounded-2xl p-4 border border-slate-200 text-slate-700">
+                     <div className="mt-6 text-left bg-[#FFFBF3] rounded-2xl p-4 border border-slate-200 text-[#14284B]">
                          <span className="text-xs uppercase font-bold tracking-widest block mb-3 text-slate-500 text-center">
                              Richtige Reihenfolge{Array.isArray(player.currentAnswer) ? ` – du hattest ${countOrderCorrect(q, player.currentAnswer)} von ${getOrderItems(q).length} richtig` : ''}
                          </span>
@@ -402,7 +405,7 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
                  {q.type !== 'geo' && q.correctValue && (
                      <div className="mt-6">
                          <span className="text-xs uppercase font-bold tracking-widest opacity-70 block mb-2 text-slate-500">Richtige Lösung:</span>
-                         <span className="text-2xl font-black bg-white px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-slate-800">
+                         <span className="text-2xl font-black bg-[#FFFBF3] px-6 py-3 rounded-xl shadow-sm border border-slate-200 inline-block text-[#0E1D38]">
                              {q.type === 'multiple' ? q.options[q.correctIndex] : q.correctValue}
                          </span>
                      </div>
@@ -412,7 +415,7 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
              {q.note && (
                  <div className="bg-blue-50 border border-blue-200 p-6 rounded-3xl text-left shadow-sm">
                      <span className="text-xs uppercase font-bold tracking-widest text-blue-500 block mb-2">💡 Schon gewusst?</span>
-                     <p className="text-slate-700 text-sm leading-relaxed whitespace-pre-line">{q.note}</p>
+                     <p className="text-[#14284B] text-sm leading-relaxed whitespace-pre-line">{q.note}</p>
                  </div>
              )}
          </div>

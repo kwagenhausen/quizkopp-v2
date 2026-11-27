@@ -42,12 +42,12 @@ export function LoginView({ onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
   return (
     <div className="max-w-md mx-auto pt-10 text-center">
       <img src="/logo.png" alt="Quizkopp Logo" className="w-64 h-auto mx-auto mb-10 drop-shadow-md transition-transform hover:scale-105" />
-      <div className="bg-white p-8 rounded-3xl border border-sky-100 shadow-xl space-y-4">
-        <input placeholder="RAUM-CODE" className="w-full bg-slate-50 p-4 rounded-xl text-center text-2xl font-mono border border-sky-100 outline-none focus:border-[#E69F00]" value={c} onChange={e=>setC(e.target.value.toUpperCase())} maxLength={4}/>
-        <input placeholder="DEIN NAME" className="w-full bg-slate-50 p-4 rounded-xl border border-sky-100 outline-none focus:border-[#E69F00]" value={n} onChange={e=>setN(e.target.value)}/>
+      <div className="bg-[#FFFBF3] p-8 rounded-3xl border border-[#E6D6B8] shadow-xl space-y-4">
+        <input placeholder="RAUM-CODE" className="w-full bg-slate-50 p-4 rounded-xl text-center text-2xl font-mono border border-[#E6D6B8] outline-none focus:border-[#D4A12A]" value={c} onChange={e=>setC(e.target.value.toUpperCase())} maxLength={4}/>
+        <input placeholder="DEIN NAME" className="w-full bg-slate-50 p-4 rounded-xl border border-[#E6D6B8] outline-none focus:border-[#D4A12A]" value={n} onChange={e=>setN(e.target.value)}/>
         
         <div className="space-y-2">
-            <input placeholder="NEUES TEAM (Optional)" className="w-full bg-slate-50 p-4 rounded-xl border border-sky-100 outline-none focus:border-[#E69F00]" value={t} onChange={e=>setT(e.target.value)}/>
+            <input placeholder="NEUES TEAM (Optional)" className="w-full bg-slate-50 p-4 rounded-xl border border-[#E6D6B8] outline-none focus:border-[#D4A12A]" value={t} onChange={e=>setT(e.target.value)}/>
             {c.length === 4 && existingTeams.length > 0 && (
                 <div className="flex flex-wrap gap-2 pt-2 justify-center">
                     <span className="text-xs text-slate-400 w-full mb-1">...oder bestehendem Team beitreten:</span>
@@ -96,13 +96,13 @@ export function LoginView({ onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
             const used = new Set(existingTeams.map(team => team.index));
             const auto = TEAM_STYLES.findIndex((_, i) => !used.has(i));
             onJoin(c, n, t, styleIdx ?? (auto === -1 ? 0 : auto));
-        }} disabled={!c || !n} className="w-full bg-[#E69F00] text-white py-4 rounded-xl font-bold text-lg hover:bg-[#D49100] transition-colors shadow-md disabled:opacity-50 mt-4">Jetzt beitreten</button>
+        }} disabled={!c || !n} className="w-full bg-[#D4A12A] text-white py-4 rounded-xl font-bold text-lg hover:bg-[#B98A1C] transition-colors shadow-md disabled:opacity-50 mt-4">Jetzt beitreten</button>
       </div>
       
       <div className="flex flex-col gap-4 mt-16 text-slate-400 text-xs px-4">
-          <div className="flex justify-between items-center border-b border-sky-100 pb-4">
-              <button onClick={() => { if(c.length === 4) onJoinObserver(c); else alert("Bitte 4-stelligen Raum-Code oben eintragen!"); }} className="hover:text-[#E69F00] font-bold transition-colors flex items-center gap-1">👀 Nur Mitlesen (Handy)</button>
-              <button onClick={() => { if(c.length === 4) onJoinBeamer(c); else alert("Bitte 4-stelligen Raum-Code oben eintragen!"); }} className="hover:text-[#E69F00] font-bold transition-colors flex items-center gap-1">📺 Als Beamer</button>
+          <div className="flex justify-between items-center border-b border-[#E6D6B8] pb-4">
+              <button onClick={() => { if(c.length === 4) onJoinObserver(c); else alert("Bitte 4-stelligen Raum-Code oben eintragen!"); }} className="hover:text-[#D4A12A] font-bold transition-colors flex items-center gap-1">👀 Nur Mitlesen (Handy)</button>
+              <button onClick={() => { if(c.length === 4) onJoinBeamer(c); else alert("Bitte 4-stelligen Raum-Code oben eintragen!"); }} className="hover:text-[#D4A12A] font-bold transition-colors flex items-center gap-1">📺 Als Beamer</button>
           </div>
           <button onClick={onAdmin} className="hover:text-slate-600 transition-colors mx-auto">Admin-Zentrale</button>
       </div>
@@ -113,10 +113,10 @@ export function LoginView({ onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
 export function AdminLogin({ onOk, onBack }) {
   const [pw, setPw] = useState('');
   return (
-    <div className="max-w-sm mx-auto bg-white p-8 rounded-3xl border border-sky-100 shadow-2xl mt-10 text-center">
+    <div className="max-w-sm mx-auto bg-[#FFFBF3] p-8 rounded-3xl border border-[#E6D6B8] shadow-2xl mt-10 text-center">
       <h2 className="font-bold mb-6 text-xl">Master-Login</h2>
-      <input type="password" placeholder="Passwort" className="w-full bg-slate-50 p-3 rounded mb-4 border border-sky-100 outline-none" value={pw} onChange={e=>setPw(e.target.value)} onKeyPress={e=>e.key==='Enter'&&onOk(pw)} autoFocus/>
-      <div className="flex gap-2"><button onClick={onBack} className="flex-1 bg-slate-100 py-2 rounded">Zurück</button><button onClick={()=>onOk(pw)} className="flex-1 bg-[#E69F00] text-white py-2 rounded font-bold shadow-md">Login</button></div>
+      <input type="password" placeholder="Passwort" className="w-full bg-slate-50 p-3 rounded mb-4 border border-[#E6D6B8] outline-none" value={pw} onChange={e=>setPw(e.target.value)} onKeyPress={e=>e.key==='Enter'&&onOk(pw)} autoFocus/>
+      <div className="flex gap-2"><button onClick={onBack} className="flex-1 bg-slate-100 py-2 rounded">Zurück</button><button onClick={()=>onOk(pw)} className="flex-1 bg-[#D4A12A] text-white py-2 rounded font-bold shadow-md">Login</button></div>
     </div>
   );
 }
@@ -127,8 +127,8 @@ export function AdminPanel({ onNew, onLib, onLogout }) {
     <div className="grid md:grid-cols-2 gap-6 pt-10">
       {showCleanup && <ImageCleanup onClose={() => setShowCleanup(false)} />}
       <button onClick={onNew} className="bg-emerald-500 text-white p-10 rounded-3xl flex flex-col items-center gap-4 hover:scale-105 transition-transform shadow-lg"><Plus size={48}/><span className="text-xl font-bold">Neues Quiz</span></button>
-      <button onClick={onLib} className="bg-[#E69F00] text-white p-10 rounded-3xl flex flex-col items-center gap-4 hover:scale-105 transition-transform shadow-lg"><FolderOpen size={48}/><span className="text-xl font-bold">Bibliothek</span></button>
-      <button onClick={() => setShowCleanup(true)} className="md:col-span-2 bg-white border border-sky-100 text-slate-500 hover:text-slate-700 hover:bg-slate-50 p-4 rounded-2xl font-bold flex items-center justify-center gap-2 shadow-sm">🧹 Bilder aufräumen</button>
+      <button onClick={onLib} className="bg-[#D4A12A] text-white p-10 rounded-3xl flex flex-col items-center gap-4 hover:scale-105 transition-transform shadow-lg"><FolderOpen size={48}/><span className="text-xl font-bold">Bibliothek</span></button>
+      <button onClick={() => setShowCleanup(true)} className="md:col-span-2 bg-[#FFFBF3] border border-[#E6D6B8] text-slate-500 hover:text-[#14284B] hover:bg-slate-50 p-4 rounded-2xl font-bold flex items-center justify-center gap-2 shadow-sm">🧹 Bilder aufräumen</button>
       <button onClick={onLogout} className="md:col-span-2 text-slate-400 underline mt-6">Abmelden</button>
     </div>
   );
@@ -157,19 +157,19 @@ export function Library({ onSelect, onEdit, onBack, db }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-sky-100 shadow-sm">
-        <h2 className="text-2xl font-bold flex items-center gap-3 text-slate-700">
+      <div className="flex justify-between items-center bg-[#FFFBF3] p-4 rounded-2xl border border-[#E6D6B8] shadow-sm">
+        <h2 className="text-2xl font-bold flex items-center gap-3 text-[#14284B]">
           {currentFolder ? (
             <>
-              <button onClick={() => setCurrentFolder(null)} className="p-2 hover:bg-sky-50 text-slate-400 hover:text-sky-600 rounded-lg transition-colors" title="Zurück zur Übersicht">
+              <button onClick={() => setCurrentFolder(null)} className="p-2 hover:bg-[#F8EFDF] text-slate-400 hover:text-[#14284B] rounded-lg transition-colors" title="Zurück zur Übersicht">
                 <ChevronLeft size={24}/>
               </button> 
-              <Folder size={28} className="text-sky-400"/>
+              <Folder size={28} className="text-[#8C7A55]"/>
               {currentFolder}
             </>
           ) : (
              <>
-               <FolderOpen size={28} className="text-[#E69F00]"/> Deine Bibliothek
+               <FolderOpen size={28} className="text-[#D4A12A]"/> Deine Bibliothek
              </>
           )}
         </h2>
@@ -183,10 +183,10 @@ export function Library({ onSelect, onEdit, onBack, db }) {
             {folders.map(f => {
               const quizCount = t.filter(q => q.folder === f).length;
               return (
-                <button key={f} onClick={() => setCurrentFolder(f)} className="bg-white p-6 rounded-2xl flex flex-col items-center gap-3 border border-sky-100 hover:border-sky-300 hover:shadow-md transition-all group">
-                  <Folder size={48} className="text-sky-300 group-hover:text-sky-500 transition-colors"/>
+                <button key={f} onClick={() => setCurrentFolder(f)} className="bg-[#FFFBF3] p-6 rounded-2xl flex flex-col items-center gap-3 border border-[#E6D6B8] hover:border-[#C9A96A] hover:shadow-md transition-all group">
+                  <Folder size={48} className="text-[#B9A274] group-hover:text-[#2B4470] transition-colors"/>
                   <div className="text-center w-full">
-                      <span className="font-bold text-slate-700 truncate block w-full">{f}</span>
+                      <span className="font-bold text-[#14284B] truncate block w-full">{f}</span>
                       <span className="text-xs text-slate-400 font-medium">{quizCount} Quiz{quizCount !== 1 ? 'zes' : ''}</span>
                   </div>
                 </button>
@@ -198,7 +198,7 @@ export function Library({ onSelect, onEdit, onBack, db }) {
 
       <div>
         {!currentFolder && folders.length > 0 && displayQuizzes.length > 0 && (
-            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 px-2 pt-4 border-t border-sky-100">Quizzes ohne Ordner</h3>
+            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 px-2 pt-4 border-t border-[#E6D6B8]">Quizzes ohne Ordner</h3>
         )}
         
         {displayQuizzes.length === 0 && currentFolder && (
@@ -207,13 +207,13 @@ export function Library({ onSelect, onEdit, onBack, db }) {
 
         <div className="space-y-4">
             {displayQuizzes.map(x => (
-              <div key={x.id} className="bg-white p-6 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border border-sky-50 shadow-sm hover:shadow-md transition-shadow">
+              <div key={x.id} className="bg-[#FFFBF3] p-6 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border border-[#EFE3CC] shadow-sm hover:shadow-md transition-shadow">
                 <div>
-                  <p className="font-bold text-xl text-slate-700">{x.title}</p>
+                  <p className="font-bold text-xl text-[#14284B]">{x.title}</p>
                   <p className="text-sm text-slate-400">{getQuestionTotal(x.questions || [])} Fragen{(x.questions || []).some(q => q.type === 'slide') && ` · ${(x.questions || []).filter(q => q.type === 'slide').length} Folien`} {x.allowJokers && <span className="text-amber-500 font-bold ml-2">🌟 Joker aktiv</span>}</p>
                 </div>
                 <div className="flex items-center gap-2 w-full sm:w-auto">
-                  <button onClick={() => onEdit(x)} className="p-3 text-slate-400 hover:text-[#E69F00] bg-slate-50 rounded-lg transition-colors" title="Quiz bearbeiten"><Edit3 size={20}/></button>
+                  <button onClick={() => onEdit(x)} className="p-3 text-slate-400 hover:text-[#D4A12A] bg-slate-50 rounded-lg transition-colors" title="Quiz bearbeiten"><Edit3 size={20}/></button>
                   <button onClick={() => deleteQuiz(x.id)} className="p-3 text-slate-400 hover:text-red-500 bg-slate-50 rounded-lg transition-colors" title="Quiz löschen"><Trash2 size={20}/></button>
                   <button onClick={() => onSelect(x)} className="bg-emerald-500 hover:bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold ml-auto sm:ml-2 shadow-md transition-colors w-full sm:w-auto flex items-center justify-center gap-2"><Play size={20}/> Spielen</button>
                 </div>
@@ -255,14 +255,14 @@ function ImageCleanup({ onClose }) {
       {state === 'done' && (
         <div className="text-center py-6 space-y-4">
           <div className="text-5xl">✨</div>
-          <p className="font-bold text-slate-700">{msg}</p>
-          <button onClick={() => run(false)} className="text-sm text-sky-600 font-bold">Nochmal prüfen</button>
+          <p className="font-bold text-[#14284B]">{msg}</p>
+          <button onClick={() => run(false)} className="text-sm text-[#14284B] font-bold">Nochmal prüfen</button>
         </div>
       )}
       {state === 'result' && res && (
         <div className="space-y-5">
           <div className="grid grid-cols-3 gap-3 text-center">
-            <div className="bg-slate-50 rounded-2xl p-4"><div className="text-3xl font-black text-slate-700">{res.total}</div><div className="text-xs text-slate-400 font-bold">erfasst</div></div>
+            <div className="bg-slate-50 rounded-2xl p-4"><div className="text-3xl font-black text-[#14284B]">{res.total}</div><div className="text-xs text-slate-400 font-bold">erfasst</div></div>
             <div className="bg-emerald-50 rounded-2xl p-4"><div className="text-3xl font-black text-emerald-600">{res.used}</div><div className="text-xs text-emerald-600 font-bold">in Benutzung</div></div>
             <div className="bg-amber-50 rounded-2xl p-4"><div className="text-3xl font-black text-amber-600">{res.unused.length}</div><div className="text-xs text-amber-600 font-bold">ungenutzt · {mb(res.unusedBytes)}</div></div>
           </div>
@@ -272,7 +272,7 @@ function ImageCleanup({ onClose }) {
             {res.unused.length === 0 ? 'Nichts zu löschen 🎉' : `${res.unused.length} ungenutzte Bilder löschen`}
           </button>
           {!res.deep && (
-            <div className="border-t border-sky-50 pt-4">
+            <div className="border-t border-[#EFE3CC] pt-4">
               <p className="text-xs text-slate-500 mb-2">Bilder, die vor diesem Update eingefügt wurden, kennt die Übersicht noch nicht. Ein einmaliger Tiefenscan erfasst sie – dafür werden alle Bilder einmal geladen, das kann bei vielen Folien etwas dauern.</p>
               <button onClick={() => run(true)} className="text-sm bg-slate-50 hover:bg-slate-100 text-slate-600 px-4 py-2 rounded-xl font-bold border border-slate-200">🔎 Tiefenscan starten</button>
             </div>

@@ -30,7 +30,7 @@ const noop = () => {};
 const Seg = ({ options, value, onChange }) => (
   <div className="inline-flex bg-slate-100 rounded-xl p-1">
     {options.map(([k, label]) => (
-      <button key={k} onClick={() => onChange(k)} className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-colors ${value === k ? 'bg-white shadow text-slate-700' : 'text-slate-400 hover:text-slate-600'}`}>{label}</button>
+      <button key={k} onClick={() => onChange(k)} className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-colors ${value === k ? 'bg-[#FFFBF3] shadow text-[#14284B]' : 'text-slate-400 hover:text-slate-600'}`}>{label}</button>
     ))}
   </div>
 );
@@ -72,7 +72,7 @@ export function EditorPreview({ qs, index, allowJokers, onClose }) {
   });
 
   return (
-    <div className="bg-white rounded-3xl border border-sky-100 shadow-sm p-4 mb-6">
+    <div className="bg-[#FFFBF3] rounded-3xl border border-[#E6D6B8] shadow-sm p-4 mb-6">
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <span className="font-bold text-slate-600">👀 Vorschau</span>
         <Seg options={[['beamer', '📺 Beamer'], ['phone', '📱 Handy']]} value={mode} onChange={setMode} />
@@ -81,18 +81,18 @@ export function EditorPreview({ qs, index, allowJokers, onClose }) {
       </div>
 
       {mode === 'beamer' ? (
-        <div className="rounded-2xl overflow-hidden border border-slate-200 bg-[#F0F9FF]">
+        <div className="rounded-2xl overflow-hidden border border-slate-200 bg-[#F4E9D4]">
           <ScaledStage width={1600} height={900}>
-            <div className="w-full h-full bg-[#F0F9FF] p-8 overflow-hidden text-[#1E293B] font-sans">
+            <div className="w-full h-full bg-[#F4E9D4] p-8 overflow-hidden text-[#14284B] font-sans">
               <HostDashboard key={`${index}-${stage}`} room={room} players={players} isBeamer={true} soundOn={false}
                 onReveal={noop} onNext={noop} onPrev={noop} onCorrect={noop} onBuzzerCorrect={noop} onBuzzerWrongContinue={noop} db={null} />
             </div>
           </ScaledStage>
         </div>
       ) : (
-        <div className="mx-auto rounded-[2rem] border-[10px] border-slate-800 overflow-hidden bg-[#F0F9FF] shadow-lg" style={{ width: 300 }}>
+        <div className="mx-auto rounded-[2rem] border-[10px] border-slate-800 overflow-hidden bg-[#F4E9D4] shadow-lg" style={{ width: 300 }}>
           <ScaledStage width={390} height={760} interactive>
-            <div className="w-full h-full overflow-y-auto p-4 bg-[#F0F9FF] text-[#1E293B] font-sans">
+            <div className="w-full h-full overflow-y-auto p-4 bg-[#F4E9D4] text-[#14284B] font-sans">
               <PlayerDashboard key={`${index}-${stage}`} room={room} player={players[0]} players={players} onAnswer={noop} onBuzz={noop} onUseJoker={noop} />
             </div>
           </ScaledStage>

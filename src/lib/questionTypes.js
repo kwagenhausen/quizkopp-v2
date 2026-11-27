@@ -1,5 +1,6 @@
 import { getBaseQuestionTemplate, getMediaType, getOrderItems, getSlideTemplate, isInfoItem, isSlideLike } from './helpers';
 import { isFsImage } from './images';
+import { getLayoutInfo, getSlideBullets, getSlideLayout } from '../components/Slides';
 
 // --- EDITOR: TYPEN, VORLAGEN & PRÜFUNG ---
 export const QUESTION_TYPES = [
@@ -40,7 +41,15 @@ export const applyTypeDefaults = (q, type) => {
     n.startView = n.startView || 'europe';
   }
   if (isInfoItem({ type })) { n.timer = 0; n.isJoker = false; }
-  if (isSlideLike({ type })) n.showImg = false;
+  if (isSlideLike({ type })) {
+    n.showImg = n.showImg ?? false;
+    n.slideBg = n.slideBg || 'navy';
+    n.showCaptain = n.showCaptain ?? true;
+    n.captainText = n.captainText ?? '';
+    n.slideBullets = n.slideBullets && n.slideBullets.length ? n.slideBullets : ['', '', ''];
+    n.pauseMinutes = n.pauseMinutes ?? 10;
+  }
+  if (type === 'slide' && !n.slideLayout) n.slideLayout = n.imgUrl ? 'image' : 'title';
   if (type === 'multiple' && !(n.options && n.options.length === 4)) n.options = ['', '', '', ''];
   if (type === 'order' && !(n.orderItems && n.orderItems.length >= 3)) n.orderItems = ['', '', '', ''];
   if (type === 'zoom') {
@@ -54,7 +63,7 @@ export const getItemTitle = (q) => {
   if (q.q && q.q.trim()) return q.q.trim();
   if (q.type === 'buzzer') return 'Buzzer-Runde';
   if (q.type === 'break') return 'Zwischenstand';
-  if (q.type === 'slide') return q.imgUrl ? 'Folie' : 'Leere Folie';
+  if (q.type === 'slide') return getLayoutInfo(getSlideLayout(q)).label;
   if (q.type === 'round') return 'Neue Runde';
   return 'Neue Frage';
 };
@@ -70,7 +79,12 @@ export const getWarnings = (q) => {
   }
   if (q.type === 'step' && !(q.steps || []).some(s => (s.text || '').trim())) w.push('Noch keine Hinweise eingetragen');
   if (q.type === 'geo' && Number(q.targetLat) === DEFAULT_GEO.lat && Number(q.targetLng) === DEFAULT_GEO.lng) w.push('Ziel noch nicht gesetzt (steht auf der Standardposition)');
-  if (q.type === 'slide' && !q.imgUrl && !(q.q || '').trim()) w.push('Die Folie ist noch leer');
+  if (q.type === 'slide') {
+    const lay = getSlideLayout(q);
+    if ((lay === 'image' || lay === 'imageText') && !q.imgUrl) w.push('Bild fehlt');
+    if (lay === 'rules' && getSlideBullets(q).length === 0) w.push('Noch keine Punkte eingetragen');
+    if (['title', 'imageText', 'quote'].includes(lay) && !(q.q || '').trim()) w.push(lay === 'quote' ? 'Text fehlt' : 'Überschrift fehlt');
+  }
   if (q.type === 'round' && !(q.q || '').trim()) w.push('Name der Runde fehlt');
   if (q.type === 'order' && getOrderItems(q).length < 3) w.push('Mindestens 3 Einträge eintragen');
   if (q.type === 'zoom' && !q.imgUrl) w.push('Bild fehlt');
