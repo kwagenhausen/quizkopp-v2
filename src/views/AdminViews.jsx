@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { collection, deleteDoc, doc, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 import { ChevronLeft, Edit3, Folder, FolderOpen, Play, Plus, Trash2 } from 'lucide-react';
 import { db } from '../firebase';
-import { getQuestionTotal } from '../lib/helpers';
-import { Modal } from '../components/ui';
+import { TEAM_STYLES, getQuestionTotal, getTeamId, getTeamStyleIndex } from '../lib/helpers';
+import { Modal, TeamAvatar } from '../components/ui';
 import { deleteImages, scanImages } from '../lib/images';
 
 export function LoginView({ onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
@@ -13,7 +13,8 @@ export function LoginView({ onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
   });
   const [n, setN] = useState('');
   const [t, setT] = useState(''); 
-  const [existingTeams, setExistingTeams] = useState([]);
+  const [existingTeams, setExistingTeams] = useState([]); // [{ name, style, index }]
+  const [styleIdx, setStyleIdx] = useState(null);          // gewähltes Tier (null = automatisch)
 
   // Beamer-Fenster aus der Moderatoren-Ansicht: ...?raum=AB12&ansicht=beamer
   useEffect(() => {
@@ -31,7 +32,9 @@ export function LoginView({ onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
   useEffect(() => {
     if (c.length !== 4) { setExistingTeams([]); return; }
     const unsub = onSnapshot(query(collection(db, 'players'), where('roomCode', '==', c.toUpperCase())), s => {
-      setExistingTeams([...new Set(s.docs.map(d => (d.data().team || '').trim()).filter(Boolean))]);
+      const ps = s.docs.map(d => ({ id: d.id, ...d.data() }));
+      const ids = [...new Set(ps.map(p => getTeamId(p)).filter(Boolean))];
+      setExistingTeams(ids.map(id => ({ name: id, index: getTeamStyleIndex(id, ps), isTeam: ps.some(p => (p.team || '').trim() === id) })));
     }, () => setExistingTeams([]));
     return () => unsub();
   }, [c]);
@@ -48,16 +51,52 @@ export function LoginView({ onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
             {c.length === 4 && existingTeams.length > 0 && (
                 <div className="flex flex-wrap gap-2 pt-2 justify-center">
                     <span className="text-xs text-slate-400 w-full mb-1">...oder bestehendem Team beitreten:</span>
-                    {existingTeams.map(team => (
-                        <button key={team} onClick={() => setT(team)} className={`px-4 py-2 text-sm font-semibold rounded-full border transition-colors ${t === team ? 'bg-[#E69F00] text-white border-[#E69F00] shadow-md' : 'bg-white text-slate-500 border-sky-200 hover:border-[#E69F00]'}`}>
-                            {team}
-                        </button>
-                    ))}
+                    {existingTeams.filter(team => team.isTeam).map(team => {
+                        const st = TEAM_STYLES[team.index];
+                        const active = t.trim() === team.name;
+                        return (
+                          <button key={team.name} onClick={() => setT(team.name)} className={`pl-1 pr-4 py-1 text-sm font-semibold rounded-full border-2 transition-all flex items-center gap-2 ${active ? 'shadow-md scale-105' : 'opacity-80 hover:opacity-100'}`}
+                            style={{ borderColor: st.color, backgroundColor: active ? `${st.color}33` : 'white', color: '#334155' }}>
+                            <TeamAvatar style={st} size="sm" /> {team.name}
+                          </button>
+                        );
+                    })}
                 </div>
             )}
         </div>
         
-        <button onClick={() => onJoin(c, n, t)} disabled={!c || !n} className="w-full bg-[#E69F00] text-white py-4 rounded-xl font-bold text-lg hover:bg-[#D49100] transition-colors shadow-md disabled:opacity-50 mt-4">Jetzt beitreten</button>
+        {(() => {
+            // Tier wählen – nur für ein neues Team bzw. wenn man allein spielt
+            const joiningExisting = existingTeams.some(team => team.isTeam && team.name === t.trim());
+            if (joiningExisting) return null;
+            const used = new Set(existingTeams.map(team => team.index));
+            const auto = TEAM_STYLES.findIndex((_, i) => !used.has(i));
+            const current = styleIdx ?? (auto === -1 ? 0 : auto);
+            return (
+              <div className="pt-2">
+                <span className="text-xs text-slate-400 block mb-2">{t.trim() ? 'Wählt euer Team-Tier:' : 'Wähle dein Tier:'}</span>
+                <div className="grid grid-cols-6 gap-2">
+                  {TEAM_STYLES.map((st, i) => {
+                    const taken = used.has(i);
+                    const sel = current === i;
+                    return (
+                      <button key={i} onClick={() => !taken && setStyleIdx(i)} disabled={taken} title={taken ? 'Schon vergeben' : st.name}
+                        className={`aspect-square rounded-2xl text-2xl flex items-center justify-center border-2 transition-all ${sel ? 'scale-110 shadow-md' : ''} ${taken ? 'opacity-20 cursor-not-allowed' : 'hover:scale-105'}`}
+                        style={{ borderColor: sel ? st.color : 'transparent', backgroundColor: `${st.color}${sel ? '33' : '14'}` }}>
+                        {st.emoji}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+        })()}
+
+        <button onClick={() => {
+            const used = new Set(existingTeams.map(team => team.index));
+            const auto = TEAM_STYLES.findIndex((_, i) => !used.has(i));
+            onJoin(c, n, t, styleIdx ?? (auto === -1 ? 0 : auto));
+        }} disabled={!c || !n} className="w-full bg-[#E69F00] text-white py-4 rounded-xl font-bold text-lg hover:bg-[#D49100] transition-colors shadow-md disabled:opacity-50 mt-4">Jetzt beitreten</button>
       </div>
       
       <div className="flex flex-col gap-4 mt-16 text-slate-400 text-xs px-4">

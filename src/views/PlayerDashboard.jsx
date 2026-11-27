@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowDown, ArrowUp, CheckCircle, Clock, Pause, Play, Trophy } from 'lucide-react';
 import { GeoMap, MapErrorBoundary } from '../components/GeoMap';
-import { Confetti, QuizImage, ZoomImage, useZoomProgress } from '../components/ui';
-import { calculateDistance, countOrderCorrect, getMediaType, getOrderItems, getOrderShuffle, getPodiumSize, getQuestionNumber, getRoundNumber, getSortedTeams, isInfoItem, isManualGraded, isPlaceRevealed, isSlideLike, vibrate } from '../lib/helpers';
+import { Confetti, QuizImage, TeamAvatar, ZoomImage, useZoomProgress } from '../components/ui';
+import { calculateDistance, countOrderCorrect, getMediaType, getOrderItems, getOrderShuffle, getPlayerStyle, getPodiumSize, getQuestionNumber, getRoundNumber, getSortedTeams, isInfoItem, isManualGraded, isPlaceRevealed, isSlideLike, vibrate } from '../lib/helpers';
 
 export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUseJoker }) {
   const q = room.questions[room.currentQuestionIndex];
@@ -50,8 +50,9 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
 
   if (room.status === 'lobby') return (
     <div className="text-center py-20 bg-white rounded-3xl border border-sky-100 shadow-xl max-w-sm mx-auto text-slate-700">
+      <div className="mb-6"><TeamAvatar style={getPlayerStyle(player, players)} size="xl" /></div>
       <h2 className="text-2xl font-bold">Hallo {player.name}!</h2>
-      {player.team && <div className="mt-4 text-lg font-bold text-sky-600 bg-sky-50 inline-block px-6 py-2 rounded-full border border-sky-100">Dein Team: {player.team}</div>}
+      {player.team && <div className="mt-4 text-lg font-bold inline-block px-6 py-2 rounded-full border-2" style={{ color: getPlayerStyle(player, players).color, borderColor: getPlayerStyle(player, players).color, backgroundColor: `${getPlayerStyle(player, players).color}12` }}>Dein Team: {player.team}</div>}
       <p className="mt-8 animate-pulse text-[#E69F00]">Warte auf Start...</p>
     </div>
   );
@@ -260,7 +261,7 @@ export function PlayerDashboard({ room, player, players, onAnswer, onBuzz, onUse
   return (
     <div className="max-w-md mx-auto space-y-6 text-slate-700">
       <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-widest">
-        <span>Frage {getQuestionNumber(room.questions, room.currentQuestionIndex)}</span>
+        <span className="flex items-center gap-2"><TeamAvatar style={getPlayerStyle(player, players)} size="xs" /> Frage {getQuestionNumber(room.questions, room.currentQuestionIndex)}</span>
         {q.isJoker && <span className="text-amber-500 font-black animate-pulse bg-amber-50 px-2 py-1 rounded">🌟 2 PUNKTE</span>}
         {q.timer === 0 && <span className="flex items-center gap-1 text-[#E69F00]"><Clock size={12}/> ∞</span>}
       </div>

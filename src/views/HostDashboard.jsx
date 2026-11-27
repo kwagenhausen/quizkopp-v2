@@ -2,9 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { deleteDoc, doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { Bell, CheckCircle, ChevronLeft, ChevronRight, Clock, Download, Maximize, MessageSquare, Monitor, Pause, Plus, Smartphone, Trophy, Users, XCircle } from 'lucide-react';
 import { GeoMap, MapErrorBoundary } from '../components/GeoMap';
-import { AnimatedRanking, Confetti, Podium, QuizImage, ScaledStage, TextSlide, ZoomImage, useZoomProgress } from '../components/ui';
+import { AnimatedRanking, Confetti, Podium, QuizImage, ScaledStage, TeamAvatar, TextSlide, ZoomImage, useZoomProgress } from '../components/ui';
 import { db } from '../firebase';
-import { calculateDistance, countOrderCorrect, downloadCSV, fmtPts, getMediaType, getOrderItems, getOrderShuffle, getPodiumSize, getQuestionNumber, getQuestionTotal, getRoundNumber, getSolutionText, getSortedTeams, getYouTubeEmbedUrl, isInfoItem, isManualGraded, isSlideLike, toggleFullscreen } from '../lib/helpers';
+import { TEAM_STYLES, calculateDistance, countOrderCorrect, downloadCSV, fmtPts, getMediaType, getOrderItems, getOrderShuffle, getPlayerStyle, getPodiumSize, getQuestionNumber, getQuestionTotal, getRoundNumber, getSolutionText, getSortedTeams, getYouTubeEmbedUrl, isInfoItem, isManualGraded, isSlideLike, toggleFullscreen } from '../lib/helpers';
 import { preloadImages } from '../lib/images';
 import { getItemTitle, getTypeInfo } from '../lib/questionTypes';
 import { Sound } from '../lib/sound';
@@ -149,9 +149,12 @@ export function HostDashboard({ room, players, onReveal, onNext, onPrev, soundOn
       const shuffled = [...players].sort(() => 0.5 - Math.random());
       const batch = writeBatch(db);
       
+      // Teams bekommen Tiernamen & -farben: "Die Füchse", "Die Frösche", …
       shuffled.forEach((p, index) => {
-        const teamIndex = (index % numTeams) + 1;
-        batch.update(doc(db, 'players', p.id), { team: `Team ${teamIndex}` });
+        const i = index % numTeams;
+        const st = TEAM_STYLES[i % TEAM_STYLES.length];
+        const name = i < TEAM_STYLES.length ? `Die ${st.name}` : `Team ${i + 1}`;
+        batch.update(doc(db, 'players', p.id), { team: name, teamStyle: i % TEAM_STYLES.length });
       });
       
       await batch.commit();
@@ -283,7 +286,17 @@ export function HostDashboard({ room, players, onReveal, onNext, onPrev, soundOn
       </div>
       <div className="bg-white p-8 rounded-3xl border border-sky-100 max-w-4xl mx-auto shadow-xl">
         <h3 className="mb-8 font-bold flex items-center justify-center gap-3 text-3xl text-slate-700"><Users size={36}/> Teams ({sortedTeams.length}) | Spieler ({players.length})</h3>
-        <div className="flex flex-wrap gap-4 justify-center">{players.map(p=><span key={p.id} className="bg-slate-50 px-6 py-3 rounded-full text-xl font-semibold shadow-sm text-slate-600">{p.name} {p.team && <span className="text-sm font-normal text-slate-400 ml-1">({p.team})</span>}</span>)}</div>
+        <div className="flex flex-wrap gap-4 justify-center">
+          {sortedTeams.map(t => (
+            <div key={t.name} className="flex items-center gap-3 bg-white pl-2 pr-6 py-2 rounded-full border-2 shadow-sm" style={{ borderColor: t.style.color, backgroundColor: `${t.style.color}12` }}>
+              <TeamAvatar style={t.style} size="md" />
+              <span className="text-left">
+                <span className="block text-xl font-bold text-slate-700 leading-tight">{t.name}</span>
+                {(t.players.length > 1 || t.players[0]?.name !== t.name) && <span className="block text-sm text-slate-500">{t.players.map(p => p.name).join(', ')}</span>}
+              </span>
+            </div>
+          ))}
+        </div>
         
         {!isBeamer && players.length > 0 && (
           <div className="mt-12 pt-8 border-t border-sky-100 flex flex-col md:flex-row items-center justify-center gap-6">
@@ -447,6 +460,8 @@ export function HostDashboard({ room, players, onReveal, onNext, onPrev, soundOn
       return {
           id: p.id,
           name: p.team || p.name,
+          emoji: getPlayerStyle(p, players).emoji,
+          color: getPlayerStyle(p, players).color,
           lat: Number(p.currentAnswer.lat),
           lng: Number(p.currentAnswer.lng),
           dist: calculateDistance(safeTargetLat, safeTargetLng, Number(p.currentAnswer.lat), Number(p.currentAnswer.lng))
@@ -556,7 +571,7 @@ export function HostDashboard({ room, players, onReveal, onNext, onPrev, soundOn
                     const c = countOrderCorrect(q, p.currentAnswer);
                     return (
                       <div key={p.id} className={`p-4 rounded-xl border-2 ${c === n ? 'bg-emerald-50 border-emerald-500' : 'bg-slate-50 border-sky-100'}`}>
-                        <div className="font-bold text-slate-700 flex justify-between"><span>{p.name} {p.team && <span className="text-xs text-slate-400 font-normal">({p.team})</span>}</span>{p.jokerQuestion === room.currentQuestionIndex && <span>🌟</span>}</div>
+                        <div className="font-bold text-slate-700 flex justify-between"><span className="flex items-center gap-2"><TeamAvatar style={getPlayerStyle(p, players)} size="xs" />{p.name} {p.team && <span className="text-xs text-slate-400 font-normal">({p.team})</span>}</span>{p.jokerQuestion === room.currentQuestionIndex && <span>🌟</span>}</div>
                         <div className="text-sm mt-1 flex justify-between"><span>{c}/{n} richtig</span><span className="font-bold text-emerald-600">{p.currentAwardedPoints > 0 ? `+${p.currentAwardedPoints}` : ''}</span></div>
                       </div>
                     );
@@ -607,6 +622,7 @@ export function HostDashboard({ room, players, onReveal, onNext, onPrev, soundOn
             {q.type === 'buzzer' && room.status === 'active' && room.buzzerWinner && (
               <div className="bg-red-50 border-2 border-red-500 p-12 rounded-3xl text-center shadow-2xl animate-pulse mt-auto">
                 <p className="text-red-500 font-bold text-xl mb-4 uppercase tracking-widest">Schnellster Buzzer:</p>
+                {(() => { const w = players.find(p => p.id === room.buzzerWinner); return w ? <div className="mb-4"><TeamAvatar style={getPlayerStyle(w, players)} size="xl" /></div> : null; })()}
                 <h3 className="text-6xl md:text-7xl font-black text-slate-800 mb-2">{room.buzzerWinnerName}</h3>
                 
                 {room.buzzerReaction && (
@@ -662,7 +678,7 @@ export function HostDashboard({ room, players, onReveal, onNext, onPrev, soundOn
                         return (
                           <div key={p.id} className={`p-4 rounded-xl border-2 relative ${p.wasCorrect ? 'bg-emerald-50 border-emerald-500' : 'bg-slate-50 border-sky-100'}`}>
                               <div className="font-bold text-slate-700 flex justify-between items-center">
-                                  <span>{p.name} {p.team && <span className="text-xs text-slate-400 font-normal">({p.team})</span>}</span>
+                                  <span className="flex items-center gap-2"><TeamAvatar style={getPlayerStyle(p, players)} size="xs" />{p.name} {p.team && <span className="text-xs text-slate-400 font-normal">({p.team})</span>}</span>
                                   {pUsedJoker && <span className="text-xl" title="Joker gespielt!">🌟</span>}
                               </div>
                               <div className="text-sm mt-1">{q.options[p.currentAnswer]}</div>
@@ -784,11 +800,12 @@ export function HostDashboard({ room, players, onReveal, onNext, onPrev, soundOn
           <h3 className="text-2xl font-bold mb-8 uppercase tracking-widest text-slate-300">Team Ranking</h3>
           <div className="space-y-4">
               {sortedTeams.map((t, index) => (
-                <div key={t.name} className="bg-slate-50 rounded-xl border border-sky-50 shadow-sm overflow-hidden">
+                <div key={t.name} className="bg-slate-50 rounded-xl border border-sky-50 shadow-sm overflow-hidden" style={{ borderLeft: `6px solid ${t.style.color}` }}>
                   <div className="flex justify-between items-center p-4 bg-sky-50/50">
-                    <span className="font-bold flex items-center gap-3 text-slate-700">
+                    <span className="font-bold flex items-center gap-3 text-slate-700 min-w-0">
                       <span className="text-slate-400 text-sm">{index + 1}.</span>
-                      {t.name}
+                      <TeamAvatar style={t.style} size="sm" />
+                      <span className="truncate">{t.name}</span>
                     </span>
                     <span className="font-mono font-bold bg-white px-3 py-1 rounded-lg border border-sky-100 text-[#E69F00] shadow-inner">
                       {t.totalScore}

@@ -81,7 +81,7 @@ export const getSortedTeams = (players, room) => {
       teamsMap[tId].playerScoreSum += p.score;
   });
 
-  Object.values(teamsMap).forEach(t => { t.totalScore = t.playerScoreSum + t.estimationScore; });
+  Object.values(teamsMap).forEach(t => { t.totalScore = t.playerScoreSum + t.estimationScore; t.style = getTeamStyle(t.name, players); });
   return Object.values(teamsMap).sort((a,b) => b.totalScore - a.totalScore);
 };
 
@@ -247,3 +247,33 @@ export const getSolutionText = (q) => {
     default: return q.correctValue || '– keine Lösung hinterlegt –';
   }
 };
+
+// --- TEAMFARBEN & AVATARE ---
+export const TEAM_STYLES = [
+  { emoji: '🦊', name: 'Füchse',       color: '#F97316' },
+  { emoji: '🐸', name: 'Frösche',      color: '#22C55E' },
+  { emoji: '🐙', name: 'Kraken',       color: '#A855F7' },
+  { emoji: '🐳', name: 'Wale',         color: '#3B82F6' },
+  { emoji: '🦁', name: 'Löwen',        color: '#EAB308' },
+  { emoji: '🐞', name: 'Marienkäfer',  color: '#EF4444' },
+  { emoji: '🦄', name: 'Einhörner',    color: '#EC4899' },
+  { emoji: '🐢', name: 'Schildkröten', color: '#14B8A6' },
+  { emoji: '🐧', name: 'Pinguine',     color: '#64748B' },
+  { emoji: '🦉', name: 'Eulen',        color: '#A16207' },
+  { emoji: '🐬', name: 'Delfine',      color: '#06B6D4' },
+  { emoji: '🦖', name: 'Dinos',        color: '#84CC16' },
+];
+
+export const getTeamId = (p) => (p?.team && p.team.trim() !== '' ? p.team.trim() : p?.name || '');
+
+// Das Tier eines Teams: das, was beim Beitreten gewählt wurde – sonst fest aus dem Namen abgeleitet
+export const getTeamStyleIndex = (teamId, players) => {
+  const withStyle = (players || [])
+    .filter(p => getTeamId(p) === teamId && Number.isInteger(p.teamStyle))
+    .sort((a, b) => (a.id < b.id ? -1 : 1))[0];
+  const n = TEAM_STYLES.length;
+  const i = withStyle ? withStyle.teamStyle : hashString(teamId || '?');
+  return ((i % n) + n) % n;
+};
+export const getTeamStyle = (teamId, players) => TEAM_STYLES[getTeamStyleIndex(teamId, players)];
+export const getPlayerStyle = (player, players) => getTeamStyle(getTeamId(player), players);

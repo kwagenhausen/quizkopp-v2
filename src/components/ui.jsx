@@ -178,11 +178,12 @@ export const AnimatedRanking = ({ teams, previous = [] }) => {
         const lead = moved && afterIdx === 0;
         return (
           <div key={t.name} className="absolute left-0 right-0 transition-all duration-1000 ease-in-out" style={{ top: idx * ROW, height: ROW - 12 }}>
-            <div className={`relative h-full rounded-2xl border overflow-hidden ${lead ? 'border-amber-300 shadow-lg' : 'border-sky-100'} bg-white`}>
-              <div className={`absolute inset-y-0 left-0 transition-all ease-out ${lead ? 'bg-amber-200' : 'bg-sky-100'}`} style={{ width: `${pct}%`, transitionDuration: '1400ms' }} />
+            <div className={`relative h-full rounded-2xl border-2 overflow-hidden bg-white ${lead ? 'shadow-lg' : ''}`} style={{ borderColor: t.style ? `${t.style.color}${lead ? '' : '55'}` : undefined }}>
+              <div className="absolute inset-y-0 left-0 transition-all ease-out" style={{ width: `${pct}%`, transitionDuration: '1400ms', backgroundColor: t.style ? `${t.style.color}${lead ? '55' : '30'}` : '#E0F2FE' }} />
               <div className="relative h-full flex items-center justify-between px-5 gap-4">
                 <span className="text-2xl font-bold text-slate-700 flex items-center gap-3 min-w-0">
                   <span className="w-10 text-slate-400 flex-shrink-0">{idx + 1}.</span>
+                  <TeamAvatar style={t.style} size="md" />
                   <span className="truncate">{lead && '👑 '}{t.name}</span>
                 </span>
                 <span className="flex items-center gap-3 flex-shrink-0">
@@ -214,7 +215,10 @@ export const Podium = ({ teams, step }) => {
         return (
           <div key={place} className="flex flex-col items-center w-40 md:w-60">
             <div className={`mb-4 text-center transition-all duration-700 ${shown ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-8 scale-75'}`}>
-              <div className="text-6xl mb-2">{st.medal}</div>
+              <div className="relative inline-block mb-3">
+                {t.style ? <TeamAvatar style={t.style} size="xl" /> : <span className="text-6xl">{st.medal}</span>}
+                {t.style && <span className="absolute -top-3 -right-3 text-5xl">{st.medal}</span>}
+              </div>
               <div className="text-2xl md:text-3xl font-black text-slate-700 break-words">{t.name}</div>
               <div className="font-mono text-3xl font-bold text-[#E69F00]">{fmtPts(t.totalScore)}</div>
               <div className="text-xs text-slate-400 mt-1">{t.players.map(pp => pp.name).join(', ')}</div>
@@ -351,5 +355,23 @@ export const ScaledStage = ({ width = 1600, height = 900, children, className = 
         {children}
       </div>
     </div>
+  );
+};
+
+// --- TEAM-AVATAR: Tier im farbigen Kreis ---
+const AVATAR_SIZES = {
+  xs: 'w-6 h-6 text-sm border-2',
+  sm: 'w-8 h-8 text-lg border-2',
+  md: 'w-11 h-11 text-2xl border-[3px]',
+  lg: 'w-16 h-16 text-4xl border-4',
+  xl: 'w-28 h-28 text-6xl border-[6px]',
+};
+export const TeamAvatar = ({ style, size = 'md', className = '' }) => {
+  if (!style) return null;
+  return (
+    <span className={`inline-flex items-center justify-center rounded-full flex-shrink-0 shadow-sm leading-none ${AVATAR_SIZES[size] || AVATAR_SIZES.md} ${className}`}
+      style={{ backgroundColor: `${style.color}22`, borderColor: style.color }}>
+      {style.emoji}
+    </span>
   );
 };

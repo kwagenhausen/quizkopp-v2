@@ -3,7 +3,7 @@ import { onAuthStateChanged, signInAnonymously } from 'firebase/auth';
 import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { LogOut, Maximize, Mic, Trophy, Volume2, VolumeX } from 'lucide-react';
 import { ADMIN_PASSWORD, auth, db } from './firebase';
-import { cleanupOldData, deleteRoomWithPlayers, generateRoomCode, getOrderPoints, getSortedTeams, isInfoItem, toggleFullscreen } from './lib/helpers';
+import { cleanupOldData, deleteRoomWithPlayers, generateRoomCode, getOrderPoints, getSortedTeams, getTeamStyleIndex, isInfoItem, toggleFullscreen } from './lib/helpers';
 import { Sound } from './lib/sound';
 import { AdminLogin, AdminPanel, Library, LoginView } from './views/AdminViews';
 import { HostSetup } from './views/Editor';
@@ -304,7 +304,7 @@ export default function App() {
               </h1>
           </div>
           <div className="flex items-center gap-4">
-          {role === 'host' && <button onClick={toggleModerator} className={`flex items-center gap-1 text-sm font-bold px-3 py-1 rounded-full transition-colors ${moderatorMode ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-sky-500'}`} title="Moderatoren-Ansicht: Auflösung, Notizen & Vorschau – der Beamer läuft in einem eigenen Fenster"><Mic size={18}/> <span className="hidden md:inline">{moderatorMode ? 'Moderation an' : 'Moderation'}</span></button>}
+          {role === 'host' && <button onClick={toggleModerator} className={`flex items-center gap-1 text-sm font-bold px-3 py-1 rounded-full transition-colors ${moderatorMode ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-sky-500'}`} title="Moderatoren-Ansicht: Lösung, Notizen & Vorschau – der Beamer läuft in einem eigenen Fenster"><Mic size={18}/> <span className="hidden md:inline">{moderatorMode ? 'Moderation an' : 'Moderation'}</span></button>}
           {(role === 'host' || role === 'beamer') && <button onClick={toggleSound} className="text-slate-400 hover:text-sky-500 transition-colors" title={soundOn ? 'Sound ausschalten' : 'Sound einschalten'}>{soundOn ? <Volume2 size={20}/> : <VolumeX size={20}/>}</button>}
           {(role === 'host' || role === 'beamer') && <button onClick={toggleFullscreen} className="text-slate-400 hover:text-sky-500 transition-colors" title="Vollbild an/aus"><Maximize size={20}/></button>}
           {role && <button onClick={() => { if(role==='host' && currentRoomCode) { if (!window.confirm('Quiz wirklich beenden? Der Raum wird für alle geschlossen.')) return; deleteRoomWithPlayers(currentRoomCode).catch(console.error); } leaveRoom(); }} className="text-slate-400 hover:text-red-500 transition-colors"><LogOut size={20}/></button>}
@@ -313,24 +313,29 @@ export default function App() {
       </header>
 
       <main className={(role === 'host' || role === 'beamer') ? "w-full max-w-[1920px] mx-auto p-4 lg:p-8 relative" : role === 'setup' ? "w-full max-w-7xl mx-auto p-4 lg:p-8 relative" : "max-w-4xl mx-auto p-4 py-8 relative"}>
-        {!role && !adminAuth && <LoginView onJoin={async (c, n, t) => {
+        {!role && !adminAuth && <LoginView onJoin={async (c, n, t, styleIdx) => {
             const roomCode = c.toUpperCase();
             const playerName = n.trim();
             if(!(await roomExists(roomCode))) return alert("Raum nicht gefunden!");
             
             const sameRoom = await getDocs(query(collection(db, 'players'), where('roomCode', '==', roomCode)));
-            const existingPlayer = sameRoom.docs.map(d => ({ id: d.id, ...d.data() })).find(p => (p.name || '').toLowerCase() === playerName.toLowerCase());
+            const roomPlayers = sameRoom.docs.map(d => ({ id: d.id, ...d.data() }));
+            const existingPlayer = roomPlayers.find(p => (p.name || '').toLowerCase() === playerName.toLowerCase());
+            // Tritt man einem bestehenden Team bei, übernimmt man dessen Tier – sonst das gewählte
+            const teamName = (t || '').trim();
+            const teamMate = teamName && roomPlayers.find(p => (p.team || '').trim() === teamName && p.id !== existingPlayer?.id);
+            const teamStyle = teamMate ? getTeamStyleIndex(teamName, roomPlayers) : (Number.isInteger(styleIdx) ? styleIdx : null);
             
             if (existingPlayer) {
                 if (existingPlayer.id !== user.uid) {
                     const { id, ...oldData } = existingPlayer; 
                     await deleteDoc(doc(db, 'players', existingPlayer.id));
-                    await setDoc(doc(db, 'players', user.uid), { ...oldData, team: t });
+                    await setDoc(doc(db, 'players', user.uid), { ...oldData, team: t, teamStyle });
                 } else {
-                    await updateDoc(doc(db, 'players', user.uid), { team: t });
+                    await updateDoc(doc(db, 'players', user.uid), { team: t, teamStyle });
                 }
             } else {
-                await setDoc(doc(db,'players',user.uid),{name:playerName, team:t, roomCode:roomCode, score:0, currentAnswer:null, answers:{}, jokerUsed: false, jokerQuestion: null, isBullseye: false, stepLockedIn: null});
+                await setDoc(doc(db,'players',user.uid),{name:playerName, team:t, teamStyle, roomCode:roomCode, score:0, currentAnswer:null, answers:{}, jokerUsed: false, jokerQuestion: null, isBullseye: false, stepLockedIn: null});
             }
             setCurrentRoomCode(roomCode); setRole('player');
         }} onAdmin={() => setAdminAuth('login')} onJoinBeamer={async (c) => {

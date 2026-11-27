@@ -5,8 +5,18 @@ import 'leaflet/dist/leaflet.css';
 // --- ABSOLUT SICHERE CSS-ICONS ---
 export const getPinIcon = (isTarget = false, opts = {}) => {
     if (typeof window === 'undefined') return null;
+    if (!isTarget && opts.emoji) {
+        // Spieler-Pin: Team-Tier im Kreis in Teamfarbe (Gewinner mit goldenem Ring)
+        const size = opts.winner ? 40 : 32;
+        const ring = opts.winner ? '#FACC15' : 'white';
+        return L.divIcon({
+            className: 'custom-css-pin',
+            html: `<div class="${opts.drop ? 'geo-pin-drop' : ''}" style="background-color: ${opts.color || '#E69F00'}; width: ${size}px; height: ${size}px; border-radius: 50%; border: ${opts.winner ? 4 : 3}px solid ${ring}; box-shadow: 0 4px 8px rgba(0,0,0,0.45); position: relative; top: -${size / 2}px; left: -${size / 2}px; display: flex; align-items: center; justify-content: center; font-size: ${Math.round(size * 0.55)}px; line-height: 1;">${opts.emoji}</div>`,
+            iconSize: [0, 0]
+        });
+    }
     const size = isTarget || opts.winner ? 30 : 24;
-    const color = isTarget ? '#DC2626' : (opts.winner ? '#FACC15' : '#E69F00');
+    const color = isTarget ? '#DC2626' : (opts.winner ? '#FACC15' : (opts.color || '#E69F00'));
     return L.divIcon({
         className: 'custom-css-pin',
         html: `<div class="${opts.drop ? 'geo-pin-drop' : ''}" style="background-color: ${color}; width: ${size}px; height: ${size}px; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 6px rgba(0,0,0,0.4); position: relative; top: -${size / 2}px; left: -${size / 2}px;"></div>`,
@@ -237,7 +247,7 @@ export const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = []
     }, [lat, lng, isTarget, readOnly, stage]);
 
     // 6. Spieler-Pins, Linien und Entfernungen (nur bei der Auflösung)
-    const pinsKey = JSON.stringify((playerPins || []).map(p => [p.id, p.name, p.lat, p.lng]));
+    const pinsKey = JSON.stringify((playerPins || []).map(p => [p.id, p.name, p.lat, p.lng, p.emoji, p.color]));
     useEffect(() => {
         const map = mapRef.current;
         if (!map || !readOnly) return;
@@ -256,7 +266,7 @@ export const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = []
 
         // Pins mit Namensschild setzen
         const entries = pins.map(p => {
-            const m = L.marker([p.lat, p.lng], { icon: getPinIcon(false, { drop: stage === 'pins' }) })
+            const m = L.marker([p.lat, p.lng], { icon: getPinIcon(false, { drop: stage === 'pins', emoji: p.emoji, color: p.color }) })
                 .bindTooltip(p.name, { permanent: true, direction: 'top', offset: [0, -14], className: 'geo-label' })
                 .addTo(map);
             playerElementsRef.current.markers.push(m);
@@ -294,7 +304,7 @@ export const GeoMap = ({ lat, lng, onMapClick, isTarget = false, playerPins = []
 
         later(() => {
             entries.filter(e => e.p.dist === minDist).forEach(({ p, m }) => {
-                m.setIcon(getPinIcon(false, { winner: true, drop: animate }));
+                m.setIcon(getPinIcon(false, { winner: true, drop: animate, emoji: p.emoji, color: p.color }));
                 m.setZIndexOffset(900);
                 m.setTooltipContent(`🏆 ${p.name} · ${formatKm(p.dist)}`);
                 m.getTooltip()?.getElement()?.classList.add('geo-label-winner');
