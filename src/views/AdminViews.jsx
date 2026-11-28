@@ -14,7 +14,8 @@ export function LoginView({ onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
   const [n, setN] = useState('');
   const [t, setT] = useState(''); 
   const [existingTeams, setExistingTeams] = useState([]); // [{ name, style, index }]
-  const [styleIdx, setStyleIdx] = useState(null);          // gewähltes Tier (null = automatisch)
+  const [styleIdx, setStyleIdx] = useState(null);          // gewähltes Team-Symbol (null = automatisch)
+  const [showMore, setShowMore] = useState(false);
 
   // Beamer-Fenster aus der Moderatoren-Ansicht: ...?raum=AB12&ansicht=beamer
   useEffect(() => {
@@ -66,7 +67,7 @@ export function LoginView({ onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
         </div>
         
         {(() => {
-            // Tier wählen – nur für ein neues Team bzw. wenn man allein spielt
+            // Symbol wählen – nur für ein neues Team bzw. wenn man allein spielt
             const joiningExisting = existingTeams.some(team => team.isTeam && team.name === t.trim());
             if (joiningExisting) return null;
             const used = new Set(existingTeams.map(team => team.index));
@@ -74,7 +75,7 @@ export function LoginView({ onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
             const current = styleIdx ?? (auto === -1 ? 0 : auto);
             return (
               <div className="pt-2">
-                <span className="text-xs text-slate-400 block mb-2">{t.trim() ? 'Wählt euer Team-Tier:' : 'Wähle dein Tier:'}</span>
+                <span className="text-xs text-slate-400 block mb-2">{t.trim() ? 'Wählt euer Team-Symbol:' : 'Wähle dein Symbol:'}</span>
                 <div className="grid grid-cols-6 gap-2">
                   {TEAM_STYLES.map((st, i) => {
                     const taken = used.has(i);
@@ -100,10 +101,19 @@ export function LoginView({ onJoin, onAdmin, onJoinBeamer, onJoinObserver }) {
       </div>
       
       <div className="flex flex-col gap-4 mt-16 text-slate-400 text-xs px-4">
-          <div className="flex justify-between items-center border-b border-[#E6D6B8] pb-4">
-              <button onClick={() => { if(c.length === 4) onJoinObserver(c); else alert("Bitte 4-stelligen Raum-Code oben eintragen!"); }} className="hover:text-[#D4A12A] font-bold transition-colors flex items-center gap-1">👀 Nur Mitlesen (Handy)</button>
-              <button onClick={() => { if(c.length === 4) onJoinBeamer(c); else alert("Bitte 4-stelligen Raum-Code oben eintragen!"); }} className="hover:text-[#D4A12A] font-bold transition-colors flex items-center gap-1">📺 Als Beamer</button>
-          </div>
+          <button onClick={() => setShowMore(!showMore)} className="mx-auto font-bold hover:text-slate-600 transition-colors">Weitere Optionen {showMore ? '▲' : '▼'}</button>
+          {showMore && (
+            <div className="space-y-3 border-y border-[#E6D6B8] py-4">
+              <button onClick={() => { if(c.length === 4) onJoinObserver(c); else alert("Bitte 4-stelligen Raum-Code oben eintragen!"); }} className="w-full text-left hover:text-[#D4A12A] transition-colors">
+                <span className="font-bold block">👀 Nur mitlesen</span>
+                <span>Zuschauen auf dem Handy, ohne mitzuspielen</span>
+              </button>
+              <button onClick={() => { if(c.length === 4) onJoinBeamer(c); else alert("Bitte 4-stelligen Raum-Code oben eintragen!"); }} className="w-full text-left hover:text-[#D4A12A] transition-colors">
+                <span className="font-bold block">📺 Dieses Gerät als Beamer</span>
+                <span>Nur nötig, wenn du auf einem anderen Gerät (z.B. iPad) moderierst. Am selben Laptop öffnest du den Beamer direkt aus dem Quiz.</span>
+              </button>
+            </div>
+          )}
           <button onClick={onAdmin} className="hover:text-slate-600 transition-colors mx-auto">Admin-Zentrale</button>
       </div>
     </div>

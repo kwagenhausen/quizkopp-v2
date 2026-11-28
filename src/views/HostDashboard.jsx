@@ -24,7 +24,8 @@ export function HostDashboard({ room, players, onReveal, onNext, onPrev, soundOn
   const canGoBack = room.status === 'finished' || (room.status !== 'lobby' && room.currentQuestionIndex > 0);
   
   const [showBuzzerAnswer, setShowBuzzerAnswer] = useState(false);
-  const [numTeams, setNumTeams] = useState(2); 
+  const [numTeams, setNumTeams] = useState(2);
+  const [showTeamDraw, setShowTeamDraw] = useState(false); 
   const [showSimulator, setShowSimulator] = useState(false);
   const [simPos, setSimPos] = useState({ 
     x: typeof window !== 'undefined' ? window.innerWidth - 420 : 800, 
@@ -287,13 +288,14 @@ export function HostDashboard({ room, players, onReveal, onNext, onPrev, soundOn
 
   if (room.status === 'lobby') return (
     <div className="text-center py-20 space-y-12 relative h-full">
-      <div className="flex flex-col md:flex-row items-center justify-center gap-12">
-        <div className="relative hidden lg:block">
-          <img src="/logo.png" alt="Der Quizkopp" className="w-80 h-80 object-contain drop-shadow-xl" />
-          <div className="absolute -top-2 -right-16 bg-white border-4 border-[#14284B] rounded-[28px] rounded-bl-md px-6 py-3 shadow-[0_6px_0_#14284B] text-left">
-            <div className="text-4xl leading-none" style={{ fontFamily: "'DM Serif Display', serif" }}>Moin!</div>
-            <div className="text-sm font-bold text-slate-500 mt-1">Gleich heißt's: Leinen los!</div>
+      <div className="flex flex-col md:flex-row items-center justify-center gap-8 xl:gap-12">
+        <div className="hidden lg:flex flex-col items-center flex-shrink-0">
+          <div className="relative bg-white border-4 border-[#14284B] rounded-[24px] px-5 py-2.5 shadow-[0_5px_0_#14284B] text-center mb-3">
+            <div className="text-3xl leading-none" style={{ fontFamily: "'DM Serif Display', serif" }}>Moin!</div>
+            <div className="text-xs font-bold text-slate-500 mt-1 whitespace-nowrap">Gleich heißt's: Leinen los!</div>
+            <span className="absolute left-1/2 -bottom-[13px] -translate-x-1/2 w-5 h-5 bg-white border-r-4 border-b-4 border-[#14284B] rotate-45"></span>
           </div>
+          <img src="/logo.png" alt="Der Quizkopp" className="w-56 h-56 xl:w-64 xl:h-64 object-contain drop-shadow-xl" />
         </div>
         <div className="bg-[#FFFBF3] p-5 rounded-3xl shadow-xl border border-[#E6D6B8]">
           <img src={`https://api.qrserver.com/v1/create-qr-code/?size=360x360&margin=8&data=${encodeURIComponent(`${window.location.origin}/?raum=${room.id}`)}`}
@@ -303,7 +305,7 @@ export function HostDashboard({ room, players, onReveal, onNext, onPrev, soundOn
         </div>
         <div>
           <p className="text-3xl text-slate-400 uppercase tracking-widest font-bold">Raum-Code</p>
-          <h2 className="text-[10rem] leading-none font-mono font-bold text-[#D4A12A] tracking-widest">{room.id}</h2>
+          <h2 className="text-[7rem] xl:text-[9rem] 2xl:text-[10rem] leading-none font-mono font-bold text-[#D4A12A] tracking-widest whitespace-nowrap">{room.id}</h2>
           <p className="text-lg text-slate-400 font-medium mt-2">{window.location.host}</p>
         </div>
       </div>
@@ -322,15 +324,17 @@ export function HostDashboard({ room, players, onReveal, onNext, onPrev, soundOn
         </div>
         
         {!isBeamer && players.length > 0 && (
-          <div className="mt-12 pt-8 border-t border-[#E6D6B8] flex flex-col md:flex-row items-center justify-center gap-6">
+          <div className="mt-10 pt-6 border-t border-[#E6D6B8] flex flex-col items-center gap-4">
+            <button onClick={() => setShowTeamDraw(!showTeamDraw)} className="text-sm font-bold text-slate-400 hover:text-slate-600 transition-colors">🎲 Teams auslosen {showTeamDraw ? '▲' : '▼'}</button>
+            {showTeamDraw && (
             <div>
-                <h4 className="mb-4 font-bold text-xl text-slate-500">🎲 Zufällige Teams auslosen</h4>
                 <div className="flex items-center gap-4">
                     <span className="text-slate-400 font-medium">Anzahl Teams:</span>
                     <input type="number" min="2" max="20" value={numTeams} onChange={e => setNumTeams(parseInt(e.target.value) || 2)} className="w-20 bg-slate-50 p-3 rounded-xl border border-[#E6D6B8] text-center font-bold text-lg outline-none focus:border-[#D4A12A]" />
                     <button onClick={generateRandomTeams} className="bg-[#14284B] text-white px-6 py-3 rounded-xl font-bold shadow-md hover:bg-[#0E1D38] transition-colors">Auslosen!</button>
                 </div>
             </div>
+            )}
           </div>
         )}
       </div>

@@ -250,23 +250,23 @@ export const getSolutionText = (q) => {
 
 // --- TEAMFARBEN & AVATARE ---
 export const TEAM_STYLES = [
-  { emoji: '🦊', name: 'Füchse',       color: '#F97316' },
-  { emoji: '🐸', name: 'Frösche',      color: '#22C55E' },
-  { emoji: '🐙', name: 'Kraken',       color: '#A855F7' },
-  { emoji: '🐳', name: 'Wale',         color: '#3B82F6' },
-  { emoji: '🦁', name: 'Löwen',        color: '#EAB308' },
-  { emoji: '🐞', name: 'Marienkäfer',  color: '#EF4444' },
-  { emoji: '🦄', name: 'Einhörner',    color: '#EC4899' },
-  { emoji: '🐢', name: 'Schildkröten', color: '#14B8A6' },
-  { emoji: '🐧', name: 'Pinguine',     color: '#64748B' },
-  { emoji: '🦉', name: 'Eulen',        color: '#A16207' },
-  { emoji: '🐬', name: 'Delfine',      color: '#06B6D4' },
-  { emoji: '🦖', name: 'Dinos',        color: '#84CC16' },
+  { emoji: '🦀', name: 'Krabben',  color: '#F97316' },
+  { emoji: '⛵', name: 'Segler',   color: '#22C55E' },
+  { emoji: '🐙', name: 'Kraken',   color: '#A855F7' },
+  { emoji: '🐳', name: 'Wale',     color: '#3B82F6' },
+  { emoji: '🧭', name: 'Lotsen',   color: '#EAB308' },
+  { emoji: '🦞', name: 'Hummer',   color: '#EF4444' },
+  { emoji: '🐚', name: 'Muscheln', color: '#EC4899' },
+  { emoji: '🐬', name: 'Delfine',  color: '#14B8A6' },
+  { emoji: '⚓', name: 'Anker',    color: '#64748B' },
+  { emoji: '🚢', name: 'Dampfer',  color: '#A16207' },
+  { emoji: '🦭', name: 'Robben',   color: '#06B6D4' },
+  { emoji: '🦈', name: 'Haie',     color: '#84CC16' },
 ];
 
 export const getTeamId = (p) => (p?.team && p.team.trim() !== '' ? p.team.trim() : p?.name || '');
 
-// Das Tier eines Teams: das, was beim Beitreten gewählt wurde – sonst fest aus dem Namen abgeleitet
+// Das Symbol eines Teams: das, was beim Beitreten gewählt wurde – sonst fest aus dem Namen abgeleitet
 export const getTeamStyleIndex = (teamId, players) => {
   const withStyle = (players || [])
     .filter(p => getTeamId(p) === teamId && Number.isInteger(p.teamStyle))
